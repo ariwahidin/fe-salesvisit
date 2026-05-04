@@ -10,17 +10,17 @@ type Step = 'gps' | 'photo' | 'confirm' | 'done'
 
 export default function CheckInPage() {
   const { id } = useParams()
-  const router  = useRouter()
+  const router = useRouter()
 
   const [schedule, setSchedule] = useState<any>(null)
-  const [step, setStep]         = useState<Step>('gps')
-  const [gps, setGps]           = useState<{ lat: number; lng: number } | null>(null)
+  const [step, setStep] = useState<Step>('gps')
+  const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null)
   const [gpsError, setGpsError] = useState('')
   const [gpsLoading, setGpsLoading] = useState(false)
-  const [photo, setPhoto]       = useState<File | null>(null)
+  const [photo, setPhoto] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState('')
-  const [submitting, setSubmitting]     = useState(false)
-  const [error, setError]       = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   // Load schedule
@@ -47,12 +47,46 @@ export default function CheckInPage() {
   }, [])
 
   // Photo select
-  const handlePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // const handlePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+  //   const file = e.target.files?.[0]
+  //   if (!file) return
+  //   setPhoto(file)
+  //   setPhotoPreview(URL.createObjectURL(file))
+  //   setStep('confirm')
+  // }
+
+  const handlePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setPhoto(file)
-    setPhotoPreview(URL.createObjectURL(file))
+    const compressed = await compressImage(file)
+    setPhoto(compressed)
+    setPhotoPreview(URL.createObjectURL(compressed))
     setStep('confirm')
+  }
+
+  const compressImage = (file: File): Promise<File> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas')
+      const img = new Image()
+      const url = URL.createObjectURL(file)
+      img.onload = () => {
+        let { width, height } = img
+        const maxSize = 1280
+        if (width > maxSize || height > maxSize) {
+          if (width > height) { height = (height / width) * maxSize; width = maxSize }
+          else { width = (width / height) * maxSize; height = maxSize }
+        }
+        canvas.width = width
+        canvas.height = height
+        canvas.getContext('2d')!.drawImage(img, 0, 0, width, height)
+        URL.revokeObjectURL(url)
+        canvas.toBlob(
+          (blob) => resolve(new File([blob!], file.name, { type: 'image/jpeg' })),
+          'image/jpeg', 0.8
+        )
+      }
+      img.src = url
+    })
   }
 
   // Submit check-in
@@ -62,9 +96,9 @@ export default function CheckInPage() {
     setError('')
     try {
       const form = new FormData()
-      form.append('latitude',  String(gps.lat))
+      form.append('latitude', String(gps.lat))
       form.append('longitude', String(gps.lng))
-      form.append('photo',     photo)
+      form.append('photo', photo)
       await visitsApi.checkIn(Number(id), form)
       setStep('done')
       setTimeout(() => router.push('/dashboard'), 1800)
@@ -115,10 +149,10 @@ export default function CheckInPage() {
               <div className={cn(
                 'w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all',
                 step === s ? 'bg-brand-500 text-white scale-110' :
-                ['photo','confirm','done'].indexOf(step) > ['gps','photo','confirm'].indexOf(s)
-                  ? 'bg-green-500 text-white' : 'bg-surface-100 text-surface-400'
+                  ['photo', 'confirm', 'done'].indexOf(step) > ['gps', 'photo', 'confirm'].indexOf(s)
+                    ? 'bg-green-500 text-white' : 'bg-surface-100 text-surface-400'
               )}>
-                {['photo','confirm','done'].indexOf(step) > i ? '✓' : i + 1}
+                {['photo', 'confirm', 'done'].indexOf(step) > i ? '✓' : i + 1}
               </div>
               {i < 2 && <div className={cn('flex-1 h-0.5 rounded', step !== 'gps' && i === 0 ? 'bg-green-400' : step === 'confirm' && i === 1 ? 'bg-green-400' : 'bg-surface-200')} />}
             </div>
