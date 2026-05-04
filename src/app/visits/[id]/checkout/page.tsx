@@ -1,11 +1,12 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import AppLayout from '@/components/layout/AppLayout'
 import { visitsApi, productsApi } from '@/lib/api'
 import { Product } from '@/types'
 import { Loader2, CheckCircle, AlertCircle, MapPin, Search, Plus, Minus, ArrowLeft, Package } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Html5Qrcode } from 'html5-qrcode'
 
 interface CountItem { product: Product; qty: number; notes: string }
 interface LastStockItem { product_id: number; qty: number; product: Product }
@@ -27,20 +28,9 @@ export default function CheckOutPage() {
   const [done, setDone] = useState(false)
   const [step, setStep] = useState<'stock' | 'gps' | 'review'>('stock')
   const [lastVisit, setLastVisit] = useState<any>(null)
+  const [scanning, setScanning] = useState(false)
+  const codeReaderRef = useRef<Html5Qrcode | null>(null)
 
-  // useEffect(() => {
-  //   Promise.all([
-  //     visitsApi.get(Number(id)),
-  //     productsApi.list({ active_only: true }),
-  //   ])
-  //   .then(([v, p]) => {
-  //     setVisit(v)
-  //     const prods = p.data || []
-  //     setProducts(prods)
-  //     // Pre-fill all products with qty 0
-  //     setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
-  //   }).catch(() => router.back())
-  // }, [id])
 
   useEffect(() => {
     Promise.all([
@@ -118,6 +108,38 @@ export default function CheckOutPage() {
       c.product.ID === productId ? { ...c, notes } : c
     ))
   }
+
+  const startScan = async () => {
+    console.log('startScan called')
+    setScanning(true)
+    try {
+      console.log('creating Html5Qrcode')
+      const html5Qrcode = new Html5Qrcode('qr-reader')
+      codeReaderRef.current = html5Qrcode
+      console.log('starting...')
+      await html5Qrcode.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText) => {
+          setSearch(decodedText)
+          stopScan()
+        },
+        undefined
+      )
+      console.log('started!')
+    } catch (e) {
+      console.error('scan error:', e)
+      setScanning(false)
+    }
+  }
+
+  const stopScan = async () => {
+    try {
+      await codeReaderRef.current?.stop()
+    } catch { }
+    setScanning(false)
+  }
+
 
   const handleSubmit = async () => {
     if (!gps) return
@@ -222,11 +244,24 @@ export default function CheckOutPage() {
             </div>
 
             {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
-              <input value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Cari produk..." className="input pl-9 py-2.5" />
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
+                <input value={search} onChange={e => setSearch(e.target.value)}
+                  placeholder="Cari produk atau scan barcode..." className="input pl-9 py-2.5" />
+              </div>
+              <button onClick={scanning ? stopScan : startScan}
+                className={cn('px-3 py-2 rounded-xl border text-sm font-semibold transition',
+                  scanning ? 'bg-red-50 border-red-200 text-red-600' : 'bg-surface-50 border-surface-200 text-surface-600')}>
+                {scanning ? '✕' : '📷'}
+              </button>
             </div>
+
+
+            <div id="qr-reader" className={cn('rounded-2xl overflow-hidden w-full', scanning ? 'block' : 'hidden')} />
+            {scanning && (
+              <div id="qr-reader" className="rounded-2xl overflow-hidden w-full" />
+            )}
 
             {/* Product list */}
             <div className="space-y-2 pb-28">
@@ -261,9 +296,6 @@ export default function CheckOutPage() {
                         className="w-8 h-8 rounded-xl bg-white flex items-center justify-center shadow-card text-surface-600 hover:bg-red-50 hover:text-red-500 transition">
                         <Minus className="w-3.5 h-3.5" />
                       </button>
-                      {/* <input type="number" min="0" value={qty}
-                        onChange={e => setQty(product.ID, e.target.value)}
-                        className="w-14 text-center font-bold text-surface-900 bg-transparent border-0 focus:outline-none text-sm" /> */}
                       <input type="number" min="0" value={qty === 0 ? '' : qty}
                         onChange={e => setQty(product.ID, e.target.value)}
                         onBlur={e => { if (e.target.value === '') setQty(product.ID, '0') }}
