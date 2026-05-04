@@ -17,6 +17,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="id" className={jakarta.variable}>
+      <head>
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#f97316" />
+      </head>
       <body className="font-sans bg-surface-50 text-surface-900 antialiased">
         {children}
       </body>
