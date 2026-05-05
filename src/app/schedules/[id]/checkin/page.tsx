@@ -5,6 +5,10 @@ import AppLayout from '@/components/layout/AppLayout'
 import { schedulesApi, visitsApi, formatDate } from '@/lib/api'
 import { MapPin, Camera, Loader2, CheckCircle, AlertCircle, RefreshCw, ArrowLeft } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { queueCheckIn } from '@/lib/pending-queue'
+import { updateLocalScheduleStatus } from '@/lib/offline-cache'
+import { db } from '@/lib/db'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 
 type Step = 'gps' | 'photo' | 'confirm' | 'done'
 
@@ -25,8 +29,25 @@ export default function CheckInPage() {
 
   // Load schedule
   useEffect(() => {
-    schedulesApi.get(Number(id)).then(setSchedule).catch(() => router.back())
+    const loadSchedule = async () => {
+      if (navigator.onLine) {
+        schedulesApi.get(Number(id))
+          .then(setSchedule)
+          .catch(() => router.back())
+      } else {
+        const cached = await db.schedules
+          .where('id').equals(Number(id))
+          .first()
+        if (cached) setSchedule(cached)
+        else router.back()
+      }
+    }
+    loadSchedule()
   }, [id])
+
+  // useEffect(() => {
+  //   schedulesApi.get(Number(id)).then(setSchedule).catch(() => router.back())
+  // }, [id])
 
   // Get GPS
   const getGPS = useCallback(() => {
@@ -89,19 +110,47 @@ export default function CheckInPage() {
     })
   }
 
+  const isOnline = useOnlineStatus()
+
   // Submit check-in
   const handleSubmit = async () => {
     if (!gps || !photo) return
     setSubmitting(true)
     setError('')
+
     try {
-      const form = new FormData()
-      form.append('latitude', String(gps.lat))
-      form.append('longitude', String(gps.lng))
-      form.append('photo', photo)
-      await visitsApi.checkIn(Number(id), form)
+      if (isOnline) {
+        // ─── Online: kirim langsung ke server ───
+        const form = new FormData()
+        form.append('latitude', String(gps.lat))
+        form.append('longitude', String(gps.lng))
+        form.append('photo', photo)
+        await visitsApi.checkIn(Number(id), form)
+
+      } else {
+        // ─── Offline: simpan ke queue ────────────
+        await queueCheckIn(
+          Number(id),
+          { latitude: gps.lat, longitude: gps.lng },
+          photo
+        )
+
+        // Update status lokal agar UI dashboard ikut update
+        await updateLocalScheduleStatus(Number(id), 'completed', {
+          id: 0,       // belum ada dari server
+          schedule_id: Number(id),
+          sales_id: 0,
+          store_id: 0,
+          status: 'checked_in',
+          check_in_at: new Date().toISOString(),
+          check_in_lat: gps.lat,
+          check_in_lng: gps.lng,
+        })
+      }
+
       setStep('done')
       setTimeout(() => router.push('/dashboard'), 1800)
+
     } catch (e: any) {
       setError(e.message)
       setStep('confirm')
@@ -109,6 +158,26 @@ export default function CheckInPage() {
       setSubmitting(false)
     }
   }
+
+  // const handleSubmit = async () => {
+  //   if (!gps || !photo) return
+  //   setSubmitting(true)
+  //   setError('')
+  //   try {
+  //     const form = new FormData()
+  //     form.append('latitude', String(gps.lat))
+  //     form.append('longitude', String(gps.lng))
+  //     form.append('photo', photo)
+  //     await visitsApi.checkIn(Number(id), form)
+  //     setStep('done')
+  //     setTimeout(() => router.push('/dashboard'), 1800)
+  //   } catch (e: any) {
+  //     setError(e.message)
+  //     setStep('confirm')
+  //   } finally {
+  //     setSubmitting(false)
+  //   }
+  // }
 
   if (!schedule) {
     return (
@@ -250,13 +319,25 @@ export default function CheckInPage() {
         )}
 
         {/* Step: Done */}
+
         {step === 'done' && (
           <div className="card p-8 text-center animate-fade-in">
             <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
               <CheckCircle className="w-10 h-10 text-green-500" />
             </div>
-            <h2 className="font-extrabold text-xl text-surface-900">Check-In Berhasil!</h2>
-            <p className="text-surface-500 text-sm mt-2">Kunjungan tercatat. Silakan hitung stok di toko.</p>
+            <h2 className="font-extrabold text-xl text-surface-900">
+              {isOnline ? 'Check-In Berhasil!' : 'Tersimpan Lokal!'}
+            </h2>
+            <p className="text-surface-500 text-sm mt-2">
+              {isOnline
+                ? 'Kunjungan tercatat. Silakan hitung stok di toko.'
+                : 'Data akan dikirim otomatis saat koneksi pulih.'}
+            </p>
+            {!isOnline && (
+              <div className="mt-3 px-4 py-2 bg-amber-50 border border-amber-200 rounded-2xl text-amber-700 text-xs">
+                ⏳ Menunggu koneksi internet
+              </div>
+            )}
             <p className="text-surface-400 text-xs mt-4">Mengalihkan ke dashboard...</p>
           </div>
         )}

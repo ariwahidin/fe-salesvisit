@@ -9,18 +9,19 @@ import { CalendarDays, CheckCircle2, Clock, Users, Store, Package, RefreshCw, Ar
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/StatusBadge'
+import { getSchedules } from '@/lib/offline-cache'
 
 
 export default function DashboardPage() {
   const { user } = useAuthStore()
-  const isAdmin  = user?.role === 'admin'
+  const isAdmin = user?.role === 'admin'
 
   return isAdmin ? <AdminDashboard /> : <SalesDashboard />
 }
 
 /* ─── Admin Dashboard ──────────────────────────────────────────────────────── */
 function AdminDashboard() {
-  const [data, setData]       = useState<DashboardSummary | null>(null)
+  const [data, setData] = useState<DashboardSummary | null>(null)
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
@@ -56,13 +57,13 @@ function AdminDashboard() {
             {/* KPI row */}
             <div className="grid grid-cols-3 gap-3">
               <StatCard label="Jadwal Hari Ini" value={data.today_schedules} icon={CalendarDays} color="orange" />
-              <StatCard label="Selesai"         value={data.today_completed}  icon={CheckCircle2} color="green" />
-              <StatCard label="Belum"           value={data.today_pending}    icon={Clock}        color="amber" />
+              <StatCard label="Selesai" value={data.today_completed} icon={CheckCircle2} color="green" />
+              <StatCard label="Belum" value={data.today_pending} icon={Clock} color="amber" />
             </div>
 
             <div className="grid grid-cols-3 gap-3">
-              <StatCard label="Total Sales"  value={data.total_sales}    icon={Users}   color="blue" />
-              <StatCard label="Total Toko"   value={data.total_stores}   icon={Store}   color="purple" />
+              <StatCard label="Total Sales" value={data.total_sales} icon={Users} color="blue" />
+              <StatCard label="Total Toko" value={data.total_stores} icon={Store} color="purple" />
               <StatCard label="Produk Aktif" value={data.total_products} icon={Package} color="teal" />
             </div>
 
@@ -82,8 +83,8 @@ function AdminDashboard() {
                         contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', fontSize: 12 }}
                         formatter={(v, n) => [v, n === 'done' ? 'Selesai' : 'Total']}
                       />
-                      <Bar dataKey="total" fill="#fed7aa" radius={[6,6,0,0]} />
-                      <Bar dataKey="done"  fill="#f97316" radius={[6,6,0,0]} />
+                      <Bar dataKey="total" fill="#fed7aa" radius={[6, 6, 0, 0]} />
+                      <Bar dataKey="done" fill="#f97316" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -132,19 +133,31 @@ function AdminDashboard() {
 function SalesDashboard() {
   const { user } = useAuthStore()
   const [schedules, setSchedules] = useState<any[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [date, setDate]           = useState(new Date().toISOString().split('T')[0])
+  const [loading, setLoading] = useState(true)
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0])
+
+  // const load = async () => {
+  //   setLoading(true)
+  //   try {
+  //     const res = await schedulesApi.my(date)
+  //     console.log('Fetched schedules from API:', res.data)
+  //     setSchedules(res.data || [])
+  //   } finally { setLoading(false) }
+  // }
 
   const load = async () => {
     setLoading(true)
     try {
-      const res = await schedulesApi.my(date)
-      setSchedules(res.data || [])
-    } finally { setLoading(false) }
+      const data = await getSchedules(date)
+      console.log('Loaded schedules:', data)
+      setSchedules(data)
+    } finally {
+      setLoading(false)
+    }
   }
   useEffect(() => { load() }, [date])
 
-  const done    = schedules.filter(s => s.status === 'completed').length
+  const done = schedules.filter(s => s.status === 'completed').length
   const pending = schedules.filter(s => s.status !== 'completed').length
 
   return (
@@ -195,7 +208,7 @@ function SalesDashboard() {
           ) : (
             <div className="space-y-3">
               {schedules.map((s: any) => (
-                <SalesScheduleCard key={s.ID} schedule={s} onRefresh={load} />
+                <SalesScheduleCard key={s.id} schedule={s} onRefresh={load} />
               ))}
             </div>
           )}
@@ -206,10 +219,10 @@ function SalesDashboard() {
 }
 
 function SalesScheduleCard({ schedule, onRefresh }: { schedule: any; onRefresh: () => void }) {
-  const visit   = schedule.visit
-  const status  = schedule.status
-  const done    = status === 'completed'
-  const inProg  = status === 'in_progress'
+  const visit = schedule.visit
+  const status = schedule.status
+  const done = status === 'completed'
+  const inProg = status === 'in_progress'
 
   return (
     <div className={cn('card p-4 border-l-4', done ? 'border-green-400' : inProg ? 'border-amber-400' : 'border-surface-200')}>
@@ -233,12 +246,12 @@ function SalesScheduleCard({ schedule, onRefresh }: { schedule: any; onRefresh: 
       {!done && (
         <div className="mt-3">
           {!visit ? (
-            <Link href={`/schedules/${schedule.ID}/checkin`}
+            <Link href={`/schedules/${schedule.id}/checkin`}
               className="btn-brand w-full py-2.5 text-sm flex items-center justify-center gap-1.5">
               📍 Check-In Sekarang
             </Link>
           ) : inProg && (
-            <Link href={`/visits/${visit.ID}/checkout`}
+            <Link href={`/visits/${visit.id}/checkout`}
               className="btn-brand w-full py-2.5 text-sm flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600">
               📦 Input Stok & Check-Out
             </Link>
@@ -247,7 +260,7 @@ function SalesScheduleCard({ schedule, onRefresh }: { schedule: any; onRefresh: 
       )}
 
       {done && visit && (
-        <Link href={`/visits/${visit.ID}`}
+        <Link href={`/visits/${visit.id}`}
           className="mt-3 flex items-center justify-center gap-1 text-xs text-brand-500 font-semibold">
           Lihat Detail <ArrowRight className="w-3 h-3" />
         </Link>
@@ -260,11 +273,11 @@ function SalesScheduleCard({ schedule, onRefresh }: { schedule: any; onRefresh: 
 function StatCard({ label, value, icon: Icon, color }: { label: string; value: number; icon: any; color: string }) {
   const colors: Record<string, string> = {
     orange: 'bg-orange-50 text-orange-600',
-    green:  'bg-green-50  text-green-600',
-    amber:  'bg-amber-50  text-amber-600',
-    blue:   'bg-blue-50   text-blue-600',
+    green: 'bg-green-50  text-green-600',
+    amber: 'bg-amber-50  text-amber-600',
+    blue: 'bg-blue-50   text-blue-600',
     purple: 'bg-purple-50 text-purple-600',
-    teal:   'bg-teal-50   text-teal-600',
+    teal: 'bg-teal-50   text-teal-600',
   }
   return (
     <div className="card p-3 flex flex-col gap-2">

@@ -8,28 +8,33 @@ import {
   LayoutDashboard, CalendarDays, ClipboardList,
   Store, Package, Users, BarChart2, LogOut, MapPin, User
 } from 'lucide-react'
+import { OfflineBanner } from '../OfflineBanner'
+
+import { initSyncManager } from '@/lib/sync-manager'
 
 const adminNav = [
-  { href: '/dashboard',  label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/schedules',  label: 'Jadwal',    icon: CalendarDays },
-  { href: '/visits',     label: 'Kunjungan', icon: ClipboardList },
-  { href: '/reports',    label: 'Laporan',   icon: BarChart2 },
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/schedules', label: 'Jadwal', icon: CalendarDays },
+  { href: '/visits', label: 'Kunjungan', icon: ClipboardList },
+  { href: '/reports', label: 'Laporan', icon: BarChart2 },
 ]
 
 const salesNav = [
-  { href: '/dashboard',  label: 'Beranda',  icon: LayoutDashboard },
-  { href: '/schedules',  label: 'Jadwal',   icon: CalendarDays },
-  { href: '/visits',     label: 'Riwayat',  icon: ClipboardList },
+  { href: '/dashboard', label: 'Beranda', icon: LayoutDashboard },
+  { href: '/schedules', label: 'Jadwal', icon: CalendarDays },
+  { href: '/visits', label: 'Riwayat', icon: ClipboardList },
 ]
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const router   = useRouter()
+  const router = useRouter()
   const { user, logout, init } = useAuthStore()
 
   useEffect(() => {
     init()
     if (!localStorage.getItem('token')) router.replace('/login')
+
+    initSyncManager()
   }, [])
 
   const nav = user?.role === 'admin' ? adminNav : salesNav
@@ -37,8 +42,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   const handleLogout = () => { logout(); router.replace('/login') }
 
+
   return (
     <div className="min-h-screen flex flex-col bg-surface-50">
+
+      <OfflineBanner />
+
       {/* Header */}
       <header className="bg-white border-b border-surface-100 sticky top-0 z-30 shadow-card">
         <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -62,9 +71,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {isAdmin && (
               <div className="hidden sm:flex items-center gap-1">
                 {[
-                  { href: '/stores',   label: 'Toko',    icon: Store },
-                  { href: '/products', label: 'Produk',  icon: Package },
-                  { href: '/users',    label: 'User',    icon: Users },
+                  { href: '/stores', label: 'Toko', icon: Store },
+                  { href: '/products', label: 'Produk', icon: Package },
+                  { href: '/users', label: 'User', icon: Users },
                 ].map(({ href, label, icon: Icon }) => (
                   <Link key={href} href={href}
                     className={cn(

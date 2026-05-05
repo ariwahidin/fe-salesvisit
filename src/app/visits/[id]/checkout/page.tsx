@@ -8,6 +8,9 @@ import { Loader2, CheckCircle, AlertCircle, MapPin, Search, Plus, Minus, ArrowLe
 import { cn } from '@/lib/utils'
 import { Html5Qrcode } from 'html5-qrcode'
 
+import { db } from '@/lib/db'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+
 interface CountItem { product: Product; qty: number; notes: string }
 interface LastStockItem { product_id: number; qty: number; product: Product }
 
@@ -31,33 +34,122 @@ export default function CheckOutPage() {
   const [scanning, setScanning] = useState(false)
   const codeReaderRef = useRef<Html5Qrcode | null>(null)
 
+  const isOnline = useOnlineStatus()
 
+  // useEffect PERTAMA - ganti ini
   useEffect(() => {
-    Promise.all([
-      visitsApi.get(Number(id)),
-      productsApi.list({ active_only: true }),
-    ])
-      .then(([v, p]) => {
-        setVisit(v)
-        setLastVisit(v.last_visit || null)
-        const prods = p.data || []
-        setProducts(prods)
-        if (v.draft_stock) {
-          try {
-            const draft = JSON.parse(v.draft_stock)
-            setNotes(draft.notes || '')
-            setCounts(prods.map((prod: Product) => {
-              const saved = draft.stock_counts?.find((s: any) => s.product_id === prod.ID)
-              return { product: prod, qty: saved?.qty ?? 0, notes: saved?.notes ?? '' }
-            }))
-          } catch {
-            setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
+    const loadData = async () => {
+      if (navigator.onLine) {
+        Promise.all([
+          visitsApi.get(Number(id)),
+          productsApi.list({ active_only: true }),
+        ])
+          .then(([v, p]) => {
+            setVisit(v)
+            setLastVisit(v.last_visit || null)
+            const prods = p.data || []
+            setProducts(prods)
+            if (v.draft_stock) {
+              try {
+                const draft = JSON.parse(v.draft_stock)
+                setNotes(draft.notes || '')
+                setCounts(prods.map((prod: Product) => {
+                  const saved = draft.stock_counts?.find((s: any) => s.product_id === prod.ID)
+                  return { product: prod, qty: saved?.qty ?? 0, notes: saved?.notes ?? '' }
+                }))
+              } catch {
+                setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
+              }
+            } else {
+              setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
+            }
+          }).catch(() => router.back())
+
+      } else {
+        try {
+          const cachedProducts = await db.products
+            .where('is_active').equals(1)
+            .toArray()
+
+          const cachedSchedule = await db.schedules
+            .filter(s => s.visit?.id === Number(id))
+            .first()
+
+          if (!cachedSchedule?.visit) {
+            router.back()
+            return
           }
-        } else {
-          setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
+
+          const cachedVisit = cachedSchedule.visit
+          setVisit({ ...cachedVisit, store: cachedSchedule.store })
+          setProducts(cachedProducts as any)
+
+          if (cachedVisit.draft_stock) {
+            try {
+              const draft = JSON.parse(cachedVisit.draft_stock)
+              setNotes(draft.notes || '')
+              setCounts(cachedProducts.map(prod => {
+                const saved = draft.stock_counts?.find((s: any) => s.product_id === prod.id)
+                return { product: prod as any, qty: saved?.qty ?? 0, notes: saved?.notes ?? '' }
+              }))
+            } catch {
+              setCounts(cachedProducts.map(prod => ({ product: prod as any, qty: 0, notes: '' })))
+            }
+          } else {
+            setCounts(cachedProducts.map(prod => ({ product: prod as any, qty: 0, notes: '' })))
+          }
+
+        } catch {
+          router.back()
         }
-      }).catch(() => router.back())
+      }
+    }
+
+    loadData()
   }, [id])
+
+  // useEffect KEDUA - biarkan seperti semula
+  useEffect(() => {
+    if (!visit || counts.length === 0) return
+    const timer = setTimeout(() => {
+      visitsApi.saveDraft(Number(id), {
+        notes,
+        stock_counts: counts.map(c => ({
+          product_id: c.product.ID,
+          qty: c.qty,
+          notes: c.notes,
+        })),
+      }).catch(() => { })
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [counts, notes])
+
+  // useEffect(() => {
+  //   Promise.all([
+  //     visitsApi.get(Number(id)),
+  //     productsApi.list({ active_only: true }),
+  //   ])
+  //     .then(([v, p]) => {
+  //       setVisit(v)
+  //       setLastVisit(v.last_visit || null)
+  //       const prods = p.data || []
+  //       setProducts(prods)
+  //       if (v.draft_stock) {
+  //         try {
+  //           const draft = JSON.parse(v.draft_stock)
+  //           setNotes(draft.notes || '')
+  //           setCounts(prods.map((prod: Product) => {
+  //             const saved = draft.stock_counts?.find((s: any) => s.product_id === prod.ID)
+  //             return { product: prod, qty: saved?.qty ?? 0, notes: saved?.notes ?? '' }
+  //           }))
+  //         } catch {
+  //           setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
+  //         }
+  //       } else {
+  //         setCounts(prods.map((prod: Product) => ({ product: prod, qty: 0, notes: '' })))
+  //       }
+  //     }).catch(() => router.back())
+  // }, [id])
 
   useEffect(() => {
     if (!visit || counts.length === 0) return
