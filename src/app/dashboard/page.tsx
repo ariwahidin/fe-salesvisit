@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { StatusBadge } from '@/components/StatusBadge'
 import { getSchedules } from '@/lib/offline-cache'
+import { subscribePush, isPushSubscribed } from '@/lib/push'
 
 
 export default function DashboardPage() {
@@ -156,6 +157,15 @@ function SalesDashboard() {
     }
   }
   useEffect(() => { load() }, [date])
+
+  // Subscribe push notification sekali saat pertama masuk dashboard
+  useEffect(() => {
+    const trySubscribe = async () => {
+      const already = await isPushSubscribed()
+      if (!already) await subscribePush()
+    }
+    trySubscribe()
+  }, [])
 
   const done = schedules.filter(s => s.status === 'completed').length
   const pending = schedules.filter(s => s.status !== 'completed').length

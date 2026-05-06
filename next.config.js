@@ -4,6 +4,7 @@ const withPWA = require('@ducanh2912/next-pwa').default({
   aggressiveFrontEndNavCaching: true,
   reloadOnOnline: true,
   disable: process.env.NODE_ENV === 'development',
+  customWorkerSrc: 'src/sw-push.js',
   workboxOptions: {
     runtimeCaching: [
       {

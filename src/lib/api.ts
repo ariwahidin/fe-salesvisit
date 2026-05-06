@@ -5,7 +5,9 @@ function token() {
   return localStorage.getItem('token')
 }
 
-async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
+// async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
+export async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
+
   const t = token()
   const res = await fetch(`${API}${path}`, {
     ...opts,
