@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation'
 import AppLayout from '@/components/layout/AppLayout'
 import { visitsApi, productsApi } from '@/lib/api'
 import { Product } from '@/types'
-import { Loader2, CheckCircle, AlertCircle, MapPin, Search, Plus, Minus, ArrowLeft, Package } from 'lucide-react'
+import { Loader2, CheckCircle, AlertCircle, MapPin, Search, Plus, Minus, ArrowLeft, Package, ShoppingCart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Html5Qrcode } from 'html5-qrcode'
 
@@ -13,6 +13,13 @@ import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 
 interface CountItem { product: Product; qty: number; notes: string }
 interface LastStockItem { product_id: number; qty: number; product: Product }
+
+interface OrderSummary {
+  notes: string
+  items: { product: Product; qty: number; price: number; subtotal: number }[]
+  totalAmount: number
+  totalQty: number
+}
 
 export default function CheckOutPage() {
   const { id } = useParams()
@@ -29,12 +36,13 @@ export default function CheckOutPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [done, setDone] = useState(false)
-  const [step, setStep] = useState<'stock' | 'gps' | 'review'>('stock')
+  const [step, setStep] = useState<'stock' | 'gps' | 'order' | 'review'>('stock')
   const [lastVisit, setLastVisit] = useState<any>(null)
   const [scanning, setScanning] = useState(false)
   const codeReaderRef = useRef<Html5Qrcode | null>(null)
-
+  const [savedOrders, setSavedOrders] = useState<OrderSummary[]>([])
   const isOnline = useOnlineStatus()
+
 
   // useEffect PERTAMA - ganti ini
   useEffect(() => {
@@ -124,6 +132,15 @@ export default function CheckOutPage() {
     return () => clearTimeout(timer)
   }, [counts, notes])
 
+  useEffect(() => {
+    if (step === 'review') {
+      try {
+        const raw = sessionStorage.getItem(`order_draft_${id}`)
+        if (raw) setSavedOrders(JSON.parse(raw))
+      } catch { }
+    }
+  }, [step])
+
   // useEffect(() => {
   //   Promise.all([
   //     visitsApi.get(Number(id)),
@@ -173,7 +190,8 @@ export default function CheckOutPage() {
       pos => {
         setGps({ lat: pos.coords.latitude, lng: pos.coords.longitude })
         setGpsLoading(false)
-        setStep('review')
+        // setStep('review')
+        setStep('order')
       },
       err => { setGpsError(err.message); setGpsLoading(false) },
       { enableHighAccuracy: true, timeout: 15000 }
@@ -233,6 +251,30 @@ export default function CheckOutPage() {
   }
 
 
+  // const handleSubmit = async () => {
+  //   if (!gps) return
+  //   setSubmitting(true)
+  //   setError('')
+  //   try {
+  //     await visitsApi.checkOut(Number(id), {
+  //       latitude: gps.lat,
+  //       longitude: gps.lng,
+  //       notes,
+  //       stock_counts: counts.map(c => ({
+  //         product_id: c.product.ID,
+  //         qty: c.qty,
+  //         notes: c.notes,
+  //       })),
+  //     })
+  //     setDone(true)
+  //     setTimeout(() => router.push('/dashboard'), 2000)
+  //   } catch (e: any) {
+  //     setError(e.message)
+  //   } finally {
+  //     setSubmitting(false)
+  //   }
+  // }
+
   const handleSubmit = async () => {
     if (!gps) return
     setSubmitting(true)
@@ -247,7 +289,16 @@ export default function CheckOutPage() {
           qty: c.qty,
           notes: c.notes,
         })),
+        // ← tambah ini
+        orders: savedOrders.map(o => ({
+          notes: o.notes,
+          items: o.items.map(item => ({
+            product_id: item.product.ID,
+            qty: item.qty,
+          })),
+        })),
       })
+      sessionStorage.removeItem(`order_draft_${id}`) // cleanup
       setDone(true)
       setTimeout(() => router.push('/dashboard'), 2000)
     } catch (e: any) {
@@ -311,17 +362,23 @@ export default function CheckOutPage() {
 
           {/* Steps */}
           <div className="flex gap-1 mb-4">
-            {(['stock', 'gps', 'review'] as const).map((s, i) => (
+            {(['stock', 'gps', 'order', 'review'] as const).map((s, i) => (
               <div key={s} className="flex items-center gap-1 flex-1">
                 <div className={cn(
                   'w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all',
                   step === s ? 'bg-brand-500 text-white scale-110' :
-                    ['gps', 'review'].indexOf(step) > i ? 'bg-green-500 text-white' : 'bg-surface-100 text-surface-400'
+                    ['stock', 'gps', 'order', 'review'].indexOf(step) > i ? 'bg-green-500 text-white' : 'bg-surface-100 text-surface-400'
                 )}>
-                  {(['gps', 'review'].indexOf(step) > i) ? '✓' : i + 1}
+                  {(['stock', 'gps', 'order', 'review'].indexOf(step) > i) ? '✓' : i + 1}
                 </div>
-                {i < 2 && <div className={cn('flex-1 h-0.5 rounded',
-                  (step === 'gps' && i === 0) || step === 'review' ? 'bg-green-400' : 'bg-surface-200')} />}
+                {i < 3 && <div className={cn('flex-1 h-0.5 rounded',
+                  (
+                    step === 'gps' && i === 0) || 
+                    step === 'order' && i <= 1 || 
+                    step === 'review' && i <= 2 ? 'bg-brand-400' :
+                    // step === 'gps' || 
+                    // step === 'order' || 
+                    step === 'review' ? 'bg-green-400' : 'bg-surface-200')} />}
               </div>
             ))}
           </div>
@@ -456,6 +513,9 @@ export default function CheckOutPage() {
           </div>
         )}
 
+
+
+
         {/* Step 3: Review & Submit */}
         {step === 'review' && gps && (
           <div className="px-4 space-y-3">
@@ -492,6 +552,43 @@ export default function CheckOutPage() {
               </div>
             )}
 
+            {/* Taruh setelah card ringkasan stock, sebelum tombol submit */}
+            {savedOrders.length > 0 && (
+              <div className="card p-4">
+                <h3 className="font-bold text-sm text-surface-800 mb-3">
+                  🛒 Order Taking ({savedOrders.length} order)
+                </h3>
+                {savedOrders.map((order, oi) => (
+                  <div key={oi} className="mb-3 last:mb-0">
+                    {savedOrders.length > 1 && (
+                      <p className="text-xs font-semibold text-surface-500 mb-1">Order {oi + 1}</p>
+                    )}
+                    <div className="space-y-1">
+                      {order.items.map((item, ii) => (
+                        <div key={ii} className="flex items-center justify-between text-sm">
+                          <span className="text-surface-700 truncate flex-1 mr-2">{item.product.name}</span>
+                          <span className="text-surface-500 text-xs mr-2">{item.qty} {item.product.unit}</span>
+                          <span className="font-bold text-brand-600 flex-shrink-0">
+                            Rp {item.subtotal.toLocaleString('id-ID')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-between text-xs font-bold text-surface-800 border-t border-surface-100 pt-2 mt-2">
+                      <span>Total Order {oi + 1}</span>
+                      <span>Rp {order.totalAmount.toLocaleString('id-ID')}</span>
+                    </div>
+                  </div>
+                ))}
+                {savedOrders.length > 1 && (
+                  <div className="flex justify-between text-sm font-extrabold text-brand-700 border-t-2 border-brand-100 pt-2 mt-2">
+                    <span>Grand Total</span>
+                    <span>Rp {savedOrders.reduce((s, o) => s + o.totalAmount, 0).toLocaleString('id-ID')}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <button onClick={handleSubmit} disabled={submitting}
               className="btn-brand w-full py-4 text-base flex items-center justify-center gap-2">
               {submitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle className="w-5 h-5" />}
@@ -502,6 +599,56 @@ export default function CheckOutPage() {
             </button>
           </div>
         )}
+
+
+        {/* Step 3: Order Taking */}
+        {step === 'order' && (
+          <div className="px-4 space-y-3">
+            <div className="card p-6 text-center">
+              <div className="w-20 h-20 bg-brand-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ShoppingCart className="w-10 h-10 text-brand-500" />
+              </div>
+              <h2 className="font-extrabold text-lg mb-1">Order Taking</h2>
+              <p className="text-surface-500 text-sm mb-6">
+                Input pesanan outlet berdasarkan kondisi stok yang sudah dicatat
+              </p>
+              <button
+                onClick={() => router.push(`/visits/${id}/order`)}
+                className="btn-brand w-full py-3.5 flex items-center justify-center gap-2 mb-3">
+                <ShoppingCart className="w-5 h-5" />
+                Input Order
+              </button>
+              <button
+                onClick={() => setStep('review')}
+                className="btn-ghost w-full py-3 text-sm text-surface-500">
+                Tidak Ada Order — Langsung Review →
+              </button>
+              <button onClick={() => setStep('gps')} className="btn-ghost w-full py-3 text-sm mt-1">
+                ← Kembali
+              </button>
+            </div>
+
+            {/* Jika sudah ada order tersimpan */}
+            {savedOrders.length > 0 && (
+              <div className="card p-4">
+                <p className="text-sm font-bold text-green-700 mb-2">
+                  ✓ {savedOrders.length} order sudah diinput
+                </p>
+                {savedOrders.map((o, i) => (
+                  <div key={i} className="text-xs text-surface-500">
+                    Order {i + 1}: {o.totalQty} item · Rp {o.totalAmount.toLocaleString('id-ID')}
+                  </div>
+                ))}
+                <button
+                  onClick={() => setStep('review')}
+                  className="btn-brand w-full py-3 mt-3 text-sm">
+                  Lanjut ke Review →
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
     </AppLayout>
   )

@@ -29,6 +29,7 @@ export interface Product {
   barcode: string
   category: string
   unit: string
+  price: number
   is_active: boolean
 }
 

@@ -6,7 +6,8 @@ import { useAuthStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, CalendarDays, ClipboardList,
-  Store, Package, Users, BarChart2, LogOut, MapPin, User
+  Store, Package, Users, BarChart2, LogOut, MapPin, User,
+  ShoppingCart
 } from 'lucide-react'
 import { OfflineBanner } from '../OfflineBanner'
 
@@ -16,6 +17,7 @@ const adminNav = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/schedules', label: 'Jadwal', icon: CalendarDays },
   { href: '/visits', label: 'Kunjungan', icon: ClipboardList },
+  { href: '/admin/orders', label: 'Order', icon: ShoppingCart },
   { href: '/reports', label: 'Laporan', icon: BarChart2 },
 ]
 
@@ -23,6 +25,7 @@ const salesNav = [
   { href: '/dashboard', label: 'Beranda', icon: LayoutDashboard },
   { href: '/schedules', label: 'Jadwal', icon: CalendarDays },
   { href: '/visits', label: 'Riwayat', icon: ClipboardList },
+  { href: '/my/orders', label: 'Order', icon: ShoppingCart },
 ]
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

@@ -132,7 +132,19 @@ export const visitsApi = {
   // multipart: FormData with latitude, longitude, photo
   checkIn: (scheduleId: number, form: FormData) =>
     req<any>(`/api/visits/check-in/${scheduleId}`, { method: 'POST', body: form }),
-  checkOut: (visitId: number, data: any) =>
+  // checkOut: (visitId: number, data: any) =>
+  //   req<any>(`/api/visits/check-out/${visitId}`, { method: 'POST', body: JSON.stringify(data) }),
+
+  checkOut: (visitId: number, data: {
+    latitude: number
+    longitude: number
+    notes: string
+    stock_counts: { product_id: number; qty: number; notes: string }[]
+    orders?: {           // opsional
+      notes: string
+      items: { product_id: number; qty: number }[]
+    }[]
+  }) =>
     req<any>(`/api/visits/check-out/${visitId}`, { method: 'POST', body: JSON.stringify(data) }),
   saveDraft: (visitId: number, data: { notes: string; stock_counts: any[] }) =>
     req<any>(`/api/visits/draft/${visitId}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -167,3 +179,37 @@ export function formatTime(s: string) {
 }
 
 export const DAY_NAMES = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
+
+// ─── Orders ───────────────────────────────────────────────────────────────────
+export const ordersApi = {
+  // Admin
+  list: (params?: { sales_id?: string; store_id?: string; visit_id?: string; status?: string; date?: string }) => {
+    const q = new URLSearchParams()
+    if (params?.sales_id) q.set('sales_id', params.sales_id)
+    if (params?.store_id) q.set('store_id', params.store_id)
+    if (params?.visit_id) q.set('visit_id', params.visit_id)
+    if (params?.status) q.set('status', params.status)
+    if (params?.date) q.set('date', params.date)
+    return req<{ data: any[]; total: number }>(`/api/orders?${q}`)
+  },
+  get: (id: number) => req<any>(`/api/my/orders/${id}`),
+  approve: (id: number) =>
+    req<any>(`/api/orders/${id}/approve`, { method: 'PATCH' }),
+  reject: (id: number, rejection_reason: string) =>
+    req<any>(`/api/orders/${id}/reject`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rejection_reason }),
+    }),
+  pdfUrl: (id: number) => `${API}/api/my/orders/${id}/pdf`,
+
+  // Sales
+  my: (params?: { status?: string; date?: string }) => {
+    const q = new URLSearchParams()
+    if (params?.status) q.set('status', params.status)
+    if (params?.date) q.set('date', params.date)
+    return req<{ data: any[]; total: number }>(`/api/my/orders?${q}`)
+  },
+  getAdmin: (id: number) => req<any>(`/api/orders/${id}`),
+  byVisit: (visitId: number) =>
+    req<{ data: any[]; total: number }>(`/api/visits/${visitId}/orders`),
+}
