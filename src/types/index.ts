@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'sales'
+export type Role = 'admin' | 'sales' | 'supervisor' | 'admin_company' | 'rtm_staff'
 
 export interface User {
   id: number
@@ -6,6 +6,7 @@ export interface User {
   email: string
   phone: string
   role: Role
+  is_super_admin: boolean 
   is_active: boolean
   CreatedAt: string
 }

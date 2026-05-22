@@ -7,15 +7,21 @@ import { useAuthStore } from '@/lib/store'
 import { useRouter } from 'next/navigation'
 
 export default function ReportsPage() {
-  const { user }  = useAuthStore()
-  const router    = useRouter()
+  const { user } = useAuthStore()
+  const router = useRouter()
+  const ALLOWED_ROLES = ['admin', 'supervisor']
 
-  useEffect(() => { if (user && user.role !== 'admin') router.replace('/dashboard') }, [user])
+  useEffect(() => {
+    if (!user) return
+    if (!ALLOWED_ROLES.includes(user.role)) {
+      router.replace('/dashboard')
+    }
+  }, [user])
 
-  const [rows, setRows]       = useState<any[]>([])
+  const [rows, setRows] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
-  const [sales, setSales]     = useState<any[]>([])
-  const [stores, setStores]   = useState<any[]>([])
+  const [sales, setSales] = useState<any[]>([])
+  const [stores, setStores] = useState<any[]>([])
   const [products, setProducts] = useState<any[]>([])
   const [filters, setFilters] = useState({
     sales_id: '', store_id: '', product_id: '',
@@ -55,8 +61,8 @@ export default function ReportsPage() {
     ])
     const csv = [headers, ...csvRows].map(r => r.join(',')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
     a.href = url; a.download = `stock-report-${new Date().toISOString().split('T')[0]}.csv`
     a.click()
     URL.revokeObjectURL(url)

@@ -10,16 +10,8 @@ import {
   ShoppingCart
 } from 'lucide-react'
 import { OfflineBanner } from '../OfflineBanner'
-
 import { initSyncManager } from '@/lib/sync-manager'
-
-const adminNav = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/schedules', label: 'Jadwal', icon: CalendarDays },
-  { href: '/visits', label: 'Kunjungan', icon: ClipboardList },
-  { href: '/admin/orders', label: 'Order', icon: ShoppingCart },
-  { href: '/reports', label: 'Laporan', icon: BarChart2 },
-]
+import AdminAppLayout from './AdminAppLayout'
 
 const salesNav = [
   { href: '/dashboard', label: 'Beranda', icon: LayoutDashboard },
@@ -36,19 +28,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     init()
     if (!localStorage.getItem('token')) router.replace('/login')
-
     initSyncManager()
   }, [])
 
-  const nav = user?.role === 'admin' ? adminNav : salesNav
-  const isAdmin = user?.role === 'admin'
+  // Admin → pakai sidebar desktop layout
+  if (user?.role === 'admin' || user?.role === 'supervisor' || user?.role === 'rtm_staff' || user?.is_super_admin === true) {
+    return <AdminAppLayout>{children}</AdminAppLayout>
+  }
 
+  // Sales → tetap mobile-first dengan bottom nav
   const handleLogout = () => { logout(); router.replace('/login') }
-
 
   return (
     <div className="min-h-screen flex flex-col bg-surface-50">
-
       <OfflineBanner />
 
       {/* Header */}
@@ -60,47 +52,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
             <div>
               <span className="font-extrabold text-surface-900 text-sm tracking-tight">SalesVisit</span>
-              {user?.role && (
-                <span className={cn(
-                  'ml-2 text-xs font-bold px-2 py-0.5 rounded-full',
-                  isAdmin ? 'bg-brand-100 text-brand-700' : 'bg-blue-100 text-blue-700'
-                )}>
-                  {isAdmin ? 'Admin' : 'Sales'}
-                </span>
-              )}
+              <span className="ml-2 text-xs font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">Sales</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {isAdmin && (
-              <div className="hidden sm:flex items-center gap-1">
-                {[
-                  { href: '/stores', label: 'Toko', icon: Store },
-                  { href: '/products', label: 'Produk', icon: Package },
-                  { href: '/users', label: 'User', icon: Users },
-                ].map(({ href, label, icon: Icon }) => (
-                  <Link key={href} href={href}
-                    className={cn(
-                      'flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold transition',
-                      pathname.startsWith(href)
-                        ? 'bg-brand-50 text-brand-600'
-                        : 'text-surface-500 hover:bg-surface-100'
-                    )}>
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </Link>
-                ))}
-              </div>
-            )}
-            <div className="flex items-center gap-1.5">
-              <div className="w-7 h-7 bg-surface-100 rounded-full flex items-center justify-center">
-                <User className="w-3.5 h-3.5 text-surface-500" />
-              </div>
-              <span className="hidden sm:block text-xs font-semibold text-surface-700 max-w-[80px] truncate">{user?.name}</span>
-              <button onClick={handleLogout}
-                className="ml-1 p-1.5 text-surface-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition">
-                <LogOut className="w-4 h-4" />
-              </button>
+          <div className="flex items-center gap-1.5">
+            <div className="w-7 h-7 bg-surface-100 rounded-full flex items-center justify-center">
+              <User className="w-3.5 h-3.5 text-surface-500" />
             </div>
+            <span className="hidden sm:block text-xs font-semibold text-surface-700 max-w-[80px] truncate">{user?.name}</span>
+            <button onClick={handleLogout}
+              className="ml-1 p-1.5 text-surface-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition">
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </header>
@@ -114,7 +77,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <nav className="fixed bottom-0 inset-x-0 bg-white border-t border-surface-100 z-30 shadow-up">
         <div className="max-w-2xl mx-auto px-4 bottom-safe">
           <div className="flex items-center justify-around py-2">
-            {nav.map(({ href, label, icon: Icon }) => {
+            {salesNav.map(({ href, label, icon: Icon }) => {
               const active = pathname === href || pathname.startsWith(href + '/')
               return (
                 <Link key={href} href={href}

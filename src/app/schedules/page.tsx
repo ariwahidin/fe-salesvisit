@@ -1,457 +1,1232 @@
 'use client'
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import AppLayout from '@/components/layout/AppLayout'
-import { schedulesApi, recurringApi, usersApi, storesApi, DAY_NAMES, formatDate } from '@/lib/api'
-import { useAuthStore } from '@/lib/store'
-import { cn } from '@/lib/utils'
+import { areasApi, usersApi } from '@/lib/api'
 import {
-  Plus, Repeat2, CalendarDays, Loader2, X, Save,
-  Trash2, RefreshCw, Zap, ChevronDown
+  Calendar, Plus, Search, Edit, Trash2, X, Save, Loader2,
+  ChevronLeft, ChevronRight, Clock, CheckCircle2,
+  AlertCircle, User, Filter, SlidersHorizontal,
+  CalendarDays, SkipForward, RotateCcw, MapPin,
+  Upload, Download, CheckSquare, Square, Minus,
+  LayoutList, LayoutGrid, MoreHorizontal, ChevronDown,
+  FileSpreadsheet, AlertTriangle, XCircle, Eye, EyeOff,
+  RefreshCw, Columns, ArrowUpDown, Info, Check,
 } from 'lucide-react'
-import { StatusBadge } from '@/components/StatusBadge'
+import { cn } from '@/lib/utils'
 
-type Tab = 'manual' | 'recurring'
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-export default function SchedulesPage() {
-  const { user } = useAuthStore()
-  const isAdmin = user?.role === 'admin'
-  return isAdmin ? <AdminSchedules /> : <SalesSchedules />
+interface Schedule {
+  ID: number
+  company_id: number
+  sales_id: number
+  store_id: number
+  visit_date: string
+  notes: string
+  status: 'scheduled' | 'completed' | 'skipped'
+  import_batch_id?: number
+  sales: { ID: number; name: string; email: string }
+  store: { ID: number; name: string; code: string; city: string; area?: { name: string; region?: { name: string } } }
+  CreatedAt: string
 }
 
-/* ─── Admin ──────────────────────────────────────────────────────────────── */
-function AdminSchedules() {
-  const [tab, setTab] = useState<Tab>('manual')
-  const [schedules, setSchedules] = useState<any[]>([])
-  const [recurrings, setRecurrings] = useState<any[]>([])
-  const [sales, setSales] = useState<any[]>([])
-  const [stores, setStores] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [filterDate, setFilterDate] = useState('')
-  const [filterSales, setFilterSales] = useState('')
-  const [modal, setModal] = useState<'schedule' | 'recurring' | 'generate' | null>(null)
-  const [form, setForm] = useState<any>({})
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [genResult, setGenResult] = useState<any>(null)
+interface SalesUser { ID: number; name: string; email: string; is_active: boolean }
+interface Area { ID: number; name: string; code: string; region_id: number }
+interface StoreItem { ID: number; name: string; code: string; city: string }
 
-  const loadAll = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [sRes, rRes, uRes, stRes] = await Promise.all([
-        schedulesApi.list({ date: filterDate, sales_id: filterSales }),
-        recurringApi.list(),
-        usersApi.list({ role: 'sales', active_only: true }),
-        storesApi.list({ active_only: true }),
-      ])
-      setSchedules(sRes.data || [])
-      setRecurrings(rRes.data || [])
-      setSales(uRes.data || [])
-      setStores(stRes.data || [])
-    } finally { setLoading(false) }
-  }, [filterDate, filterSales])
+type ViewMode = 'table' | 'calendar'
 
-  useEffect(() => { loadAll() }, [loadAll])
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  const openCreate = (type: Tab) => {
-    setForm({})
-    setError('')
-    setModal(type === 'manual' ? 'schedule' : 'recurring')
+const API = process.env.NEXT_PUBLIC_API_URL || ''
+
+function apiToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('token') : null
+}
+
+async function apiFetch(path: string, opts: RequestInit = {}) {
+  const t = apiToken()
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      ...opts.headers,
+    },
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
+}
+
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
+}
+function fmtDateShort(iso: string) {
+  return new Date(iso).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+function isoDate(d: Date) { return d.toISOString().slice(0, 10) }
+function addDays(d: Date, n: number) { const r = new Date(d); r.setDate(r.getDate() + n); return r }
+function addMonths(d: Date, n: number) { const r = new Date(d); r.setMonth(r.getMonth() + n); return r }
+function startOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1) }
+function endOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth() + 1, 0) }
+function getDaysInMonth(d: Date) {
+  const start = startOfMonth(d)
+  const end = endOfMonth(d)
+  const days: Date[] = []
+  for (let cur = new Date(start); cur <= end; cur = addDays(cur, 1)) {
+    days.push(new Date(cur))
+  }
+  return days
+}
+function monthLabel(d: Date) {
+  return d.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })
+}
+
+// ─── Status Config ────────────────────────────────────────────────────────────
+
+const STATUS_MAP = {
+  scheduled: { label: 'Dijadwalkan', color: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', dot: 'bg-amber-400', badge: 'bg-amber-100 text-amber-700', icon: Clock },
+  completed: { label: 'Selesai', color: 'text-emerald-700', bg: 'bg-emerald-50', border: 'border-emerald-200', dot: 'bg-emerald-500', badge: 'bg-emerald-100 text-emerald-700', icon: CheckCircle2 },
+  skipped: { label: 'Dilewati', color: 'text-slate-500', bg: 'bg-slate-50', border: 'border-slate-200', dot: 'bg-slate-300', badge: 'bg-slate-100 text-slate-500', icon: SkipForward },
+}
+
+function StatusBadge({ status, size = 'md' }: { status: Schedule['status']; size?: 'sm' | 'md' }) {
+  const cfg = STATUS_MAP[status] ?? STATUS_MAP.scheduled
+  const Icon = cfg.icon
+  if (size === 'sm') {
+    return (
+      <span className={cn('inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md', cfg.badge)}>
+        <Icon className="w-2.5 h-2.5" /> {cfg.label}
+      </span>
+    )
+  }
+  return (
+    <span className={cn('inline-flex items-center gap-1 text-xs font-bold px-2 py-0.5 rounded-lg', cfg.badge)}>
+      <Icon className="w-3 h-3" /> {cfg.label}
+    </span>
+  )
+}
+
+// ─── Checkbox ─────────────────────────────────────────────────────────────────
+
+function Checkbox({ checked, indeterminate, onChange }: {
+  checked: boolean; indeterminate?: boolean; onChange: (v: boolean) => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (ref.current) ref.current.indeterminate = !!indeterminate }, [indeterminate])
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={checked}
+      onChange={e => onChange(e.target.checked)}
+      className="w-4 h-4 rounded border-slate-300 text-blue-600 cursor-pointer accent-blue-600"
+    />
+  )
+}
+
+// ─── Bulk Action Bar ──────────────────────────────────────────────────────────
+
+function BulkActionBar({
+  count, onDelete, onStatus, onClose,
+}: {
+  count: number
+  onDelete: () => void
+  onStatus: (s: Schedule['status']) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-2.5 bg-blue-600 text-white rounded-xl shadow-lg">
+      <button onClick={onClose} className="p-1 hover:bg-blue-500 rounded-lg transition">
+        <X className="w-4 h-4" />
+      </button>
+      <span className="text-sm font-bold">{count} dipilih</span>
+      <div className="w-px h-4 bg-blue-400" />
+      <span className="text-xs font-semibold text-blue-200">Ubah status:</span>
+      {Object.entries(STATUS_MAP).map(([v, cfg]) => (
+        <button
+          key={v}
+          onClick={() => onStatus(v as Schedule['status'])}
+          className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 bg-blue-500 hover:bg-blue-400 rounded-lg transition"
+        >
+          <cfg.icon className="w-3 h-3" /> {cfg.label}
+        </button>
+      ))}
+      <div className="w-px h-4 bg-blue-400" />
+      <button
+        onClick={onDelete}
+        className="flex items-center gap-1 text-xs font-bold px-2.5 py-1 bg-rose-500 hover:bg-rose-400 rounded-lg transition"
+      >
+        <Trash2 className="w-3 h-3" /> Hapus
+      </button>
+    </div>
+  )
+}
+
+// ─── Import Modal ─────────────────────────────────────────────────────────────
+
+function ImportModal({ salesList, onClose, onDone }: {
+  salesList: SalesUser[]
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [step, setStep] = useState<'upload' | 'preview' | 'result'>('upload')
+  const [rows, setRows] = useState<any[]>([])
+  const [errors, setErrors] = useState<string[]>([])
+  const [importing, setImporting] = useState(false)
+  const [result, setResult] = useState<{ success: number; failed: number } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const REQUIRED_COLS = ['sales_email', 'store_code', 'visit_date']
+  const TEMPLATE_HEADER = 'sales_email,store_code,visit_date,notes\n'
+  const EXAMPLE_ROWS = [
+    'sales@example.com,STR001,2025-07-01,Kunjungan rutin',
+    'sales2@example.com,STR002,2025-07-02,',
+  ]
+
+  const downloadTemplate = () => {
+    const csv = TEMPLATE_HEADER + EXAMPLE_ROWS.join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'template_jadwal.csv'; a.click()
+    URL.revokeObjectURL(url)
   }
 
-  // const saveSchedule = async () => {
-  //   if (!form.sales_id || !form.store_id || !form.visit_date) {
-  //     setError('Sales, toko, dan tanggal wajib diisi'); return
-  //   }
-  //   setSaving(true); setError('')
-  //   try {
-  //     await schedulesApi.create(form)
-  //     setModal(null); loadAll()
-  //   } catch (e: any) { setError(e.message) }
-  //   finally { setSaving(false) }
-  // }
+  const parseCSV = (text: string) => {
+    const lines = text.trim().split('\n').map(l => l.trim()).filter(Boolean)
+    if (lines.length < 2) return { rows: [], errors: ['File kosong atau hanya header'] }
 
-  // const saveRecurring = async () => {
-  //   if (!form.sales_id || !form.store_id || form.day_of_week === undefined) {
-  //     setError('Sales, toko, dan hari wajib diisi'); return
-  //   }
-  //   setSaving(true); setError('')
-  //   try {
-  //     await recurringApi.create({ ...form, day_of_week: parseInt(form.day_of_week) })
-  //     setModal(null); loadAll()
-  //   } catch (e: any) { setError(e.message) }
-  //   finally { setSaving(false) }
-  // }
+    const header = lines[0].split(',').map(h => h.trim().toLowerCase())
+    const missing = REQUIRED_COLS.filter(c => !header.includes(c))
+    if (missing.length > 0) return { rows: [], errors: [`Kolom wajib tidak ditemukan: ${missing.join(', ')}`] }
 
+    const errs: string[] = []
+    const parsed = lines.slice(1).map((line, i) => {
+      const vals = line.split(',').map(v => v.trim())
+      const row: any = {}
+      header.forEach((h, idx) => { row[h] = vals[idx] || '' })
 
-  const saveSchedule = async () => {
-    if (!form.sales_id || !form.store_id || !form.visit_date) {
-      setError('Sales, toko, dan tanggal wajib diisi'); return
-    }
+      if (!row.sales_email) errs.push(`Baris ${i + 2}: sales_email kosong`)
+      if (!row.store_code) errs.push(`Baris ${i + 2}: store_code kosong`)
+      if (!row.visit_date || !/^\d{4}-\d{2}-\d{2}$/.test(row.visit_date))
+        errs.push(`Baris ${i + 2}: format visit_date harus YYYY-MM-DD`)
 
-    console.log('All Sales:', sales)
-
-    console.log('Saving schedule with data:', {
-      ...form,
-      sales_id: parseInt(form.sales_id),
-      store_id: parseInt(form.store_id),
+      return row
     })
 
-    // return
-
-    setSaving(true); setError('')
-    try {
-      await schedulesApi.create({
-        ...form,
-        sales_id: parseInt(form.sales_id),  // ← tambah ini
-        store_id: parseInt(form.store_id),  // ← tambah ini
-      })
-      setModal(null); loadAll()
-    } catch (e: any) { setError(e.message) }
-    finally { setSaving(false) }
+    return { rows: parsed, errors: errs }
   }
 
-  const saveRecurring = async () => {
-    if (!form.sales_id || !form.store_id || form.day_of_week === undefined) {
-      setError('Sales, toko, dan hari wajib diisi'); return
+  const handleFile = (file: File) => {
+    if (!file.name.endsWith('.csv')) {
+      setErrors(['Hanya file .csv yang didukung'])
+      return
     }
-    setSaving(true); setError('')
-    try {
-      await recurringApi.create({
-        ...form,
-        sales_id: parseInt(form.sales_id),    // ← tambah ini
-        store_id: parseInt(form.store_id),    // ← tambah ini
-        day_of_week: parseInt(form.day_of_week), // sudah ada, pastikan tetap
-      })
-      setModal(null); loadAll()
-    } catch (e: any) { setError(e.message) }
-    finally { setSaving(false) }
-  }
-
-  const generate = async () => {
-    if (!form.start_date || !form.end_date) {
-      setError('Tanggal mulai dan selesai wajib diisi'); return
+    const reader = new FileReader()
+    reader.onload = e => {
+      const { rows: r, errors: e2 } = parseCSV(e.target?.result as string)
+      setRows(r)
+      setErrors(e2)
+      if (r.length > 0) setStep('preview')
     }
-    setSaving(true); setError('')
+    reader.readAsText(file)
+  }
+
+  const doImport = async () => {
+    setImporting(true)
     try {
-      const res = await recurringApi.generate(form.start_date, form.end_date)
-      setGenResult(res)
-    } catch (e: any) { setError(e.message) }
-    finally { setSaving(false) }
-  }
-
-  const deleteSchedule = async (id: number) => {
-    if (!confirm('Hapus jadwal ini?')) return
-    await schedulesApi.remove(id); loadAll()
-  }
-
-  const deleteRecurring = async (id: number) => {
-    if (!confirm('Hapus recurring ini?')) return
-    await recurringApi.remove(id); loadAll()
+      const res = await apiFetch('/api/schedules/bulk-import', {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      })
+      setResult({ success: res.success ?? rows.length, failed: res.failed ?? 0 })
+      setStep('result')
+    } catch (e: any) {
+      setErrors([e.message])
+    } finally {
+      setImporting(false)
+    }
   }
 
   return (
-    <AppLayout>
-      <div className="p-4 space-y-4 animate-fade-in">
-        <div className="flex items-center justify-between pt-2">
-          <h1 className="text-xl font-extrabold text-surface-900">Jadwal</h1>
-          <div className="flex gap-2">
-            <button onClick={() => { setModal('generate'); setForm({}); setGenResult(null); setError('') }}
-              className="btn-ghost px-3 py-2 text-xs flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5" /> Generate
-            </button>
-            <button onClick={() => openCreate(tab)}
-              className="btn-brand px-3 py-2 text-xs flex items-center gap-1.5">
-              <Plus className="w-3.5 h-3.5" /> Tambah
-            </button>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col max-h-[80vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-50 rounded-xl flex items-center justify-center">
+              <Upload className="w-4 h-4 text-blue-600" />
+            </div>
+            <div>
+              <h2 className="font-bold text-slate-900">Import Jadwal Bulky</h2>
+              <p className="text-xs text-slate-400">Upload file CSV untuk import jadwal sekaligus</p>
+            </div>
           </div>
+          <button onClick={onClose} className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-xl">
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
-        {/* Tab */}
-        <div className="flex gap-1 p-1 bg-surface-100 rounded-2xl">
-          {(['manual', 'recurring'] as Tab[]).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={cn('flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5',
-                tab === t ? 'bg-white text-surface-900 shadow-card' : 'text-surface-500')}>
-              {t === 'manual' ? <><CalendarDays className="w-3.5 h-3.5" /> Manual</> : <><Repeat2 className="w-3.5 h-3.5" /> Recurring</>}
-            </button>
+        {/* Steps indicator */}
+        <div className="flex items-center gap-0 px-6 py-3 border-b border-slate-100 bg-slate-50">
+          {(['upload', 'preview', 'result'] as const).map((s, i) => (
+            <div key={s} className="flex items-center">
+              <div className={cn(
+                'flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full transition',
+                step === s ? 'bg-blue-600 text-white' : i < ['upload', 'preview', 'result'].indexOf(step) ? 'text-emerald-600' : 'text-slate-400'
+              )}>
+                {i < ['upload', 'preview', 'result'].indexOf(step) ? <Check className="w-3 h-3" /> : <span>{i + 1}</span>}
+                {s === 'upload' ? 'Upload' : s === 'preview' ? 'Preview' : 'Hasil'}
+              </div>
+              {i < 2 && <ChevronRight className="w-4 h-4 text-slate-300 mx-1" />}
+            </div>
           ))}
         </div>
 
-        {tab === 'manual' && (
-          <>
-            {/* Filters */}
-            <div className="flex gap-2">
-              <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)}
-                className="input flex-1 text-xs py-2" />
-              <select value={filterSales} onChange={e => setFilterSales(e.target.value)}
-                className="input flex-1 text-xs py-2">
-                <option value="">Semua Sales</option>
-                {sales.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-              <button onClick={loadAll} className="p-2 btn-ghost">
-                <RefreshCw className="w-4 h-4" />
-              </button>
-            </div>
-
-            {loading ? <Skeleton /> : schedules.length === 0 ? (
-              <Empty label="Belum ada jadwal" />
-            ) : (
-              <div className="space-y-2">
-                {schedules.map((s: any) => (
-                  <div key={s.ID} className="card p-4 flex items-start gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <StatusBadge status={s.status} />
-                        <span className="text-xs text-surface-400">{formatDate(s.visit_date)}</span>
-                      </div>
-                      <p className="font-bold text-sm text-surface-900">{s.store?.name}</p>
-                      <p className="text-xs text-surface-500">{s.sales?.name}</p>
-                      {s.notes && <p className="text-xs text-surface-400 mt-0.5 italic">"{s.notes}"</p>}
-                    </div>
-                    {s.status === 'scheduled' && (
-                      <button onClick={() => deleteSchedule(s.ID)}
-                        className="p-1.5 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {step === 'upload' && (
+            <div className="space-y-4">
+              {/* Template download */}
+              <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-slate-500" />
+                  <div>
+                    <p className="text-xs font-bold text-slate-700">Template CSV</p>
+                    <p className="text-[11px] text-slate-400">Kolom: sales_email, store_code, visit_date, notes</p>
                   </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {tab === 'recurring' && (
-          <>
-            {loading ? <Skeleton /> : recurrings.length === 0 ? (
-              <Empty label="Belum ada jadwal recurring" />
-            ) : (
-              <div className="space-y-2">
-                {recurrings.map((r: any) => (
-                  <div key={r.ID} className="card p-4 flex items-center gap-3">
-                    <div className="w-10 h-10 bg-brand-50 rounded-2xl flex items-center justify-center flex-shrink-0">
-                      <span className="text-xs font-bold text-brand-600">{DAY_NAMES[r.day_of_week].slice(0, 3)}</span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-bold text-sm text-surface-900">{r.store?.name}</p>
-                      <p className="text-xs text-surface-500">{r.sales?.name} · setiap {DAY_NAMES[r.day_of_week]}</p>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className={cn('badge', r.is_active ? 'bg-green-100 text-green-700' : 'bg-surface-100 text-surface-500')}>
-                        {r.is_active ? 'Aktif' : 'Nonaktif'}
-                      </span>
-                      <button onClick={() => deleteRecurring(r.ID)}
-                        className="p-1.5 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Create Schedule Modal */}
-      {modal === 'schedule' && (
-        <Modal title="Tambah Jadwal" onClose={() => setModal(null)}>
-          {error && <ErrBox msg={error} />}
-          <div className="space-y-3">
-            <div>
-              <label className="label">Sales</label>
-              <select value={form.sales_id || ''} onChange={e => setForm({ ...form, sales_id: e.target.value })} className="input">
-                <option value="">Pilih sales...</option>
-                {sales.map(s => <option key={s.ID} value={s.ID}>{s.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Toko</label>
-              <select value={form.store_id || ''} onChange={e => setForm({ ...form, store_id: e.target.value })} className="input">
-                <option value="">Pilih toko...</option>
-                {stores.map(s => <option key={s.ID} value={s.ID}>{s.name} - {s.city}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Tanggal Kunjungan</label>
-              <input type="date" value={form.visit_date || ''} onChange={e => setForm({ ...form, visit_date: e.target.value })} className="input" />
-            </div>
-            <div>
-              <label className="label">Catatan</label>
-              <input value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Opsional" className="input" />
-            </div>
-            <button onClick={saveSchedule} disabled={saving} className="btn-brand w-full py-3 flex items-center justify-center gap-2">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Simpan Jadwal
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {/* Create Recurring Modal */}
-      {modal === 'recurring' && (
-        <Modal title="Tambah Recurring" onClose={() => setModal(null)}>
-          {error && <ErrBox msg={error} />}
-          <div className="space-y-3">
-            <div>
-              <label className="label">Sales</label>
-              <select value={form.sales_id || ''} onChange={e => setForm({ ...form, sales_id: e.target.value })} className="input">
-                <option value="">Pilih sales...</option>
-                {sales.map(s => <option key={s.ID} value={s.ID}>{s.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Toko</label>
-              <select value={form.store_id || ''} onChange={e => setForm({ ...form, store_id: e.target.value })} className="input">
-                <option value="">Pilih toko...</option>
-                {stores.map(s => <option key={s.ID} value={s.ID}>{s.name} - {s.city}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Hari Kunjungan</label>
-              <select value={form.day_of_week ?? ''} onChange={e => setForm({ ...form, day_of_week: e.target.value })} className="input">
-                <option value="">Pilih hari...</option>
-                {DAY_NAMES.map((d, i) => <option key={i} value={i}>{d}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Catatan</label>
-              <input value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Opsional" className="input" />
-            </div>
-            <button onClick={saveRecurring} disabled={saving} className="btn-brand w-full py-3 flex items-center justify-center gap-2">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Repeat2 className="w-4 h-4" />}
-              Simpan Recurring
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {/* Generate Modal */}
-      {modal === 'generate' && (
-        <Modal title="Generate Jadwal dari Recurring" onClose={() => setModal(null)}>
-          {error && <ErrBox msg={error} />}
-          {genResult ? (
-            <div className="text-center py-4">
-              <div className="text-4xl mb-3">✅</div>
-              <p className="font-bold text-surface-900">Generate Selesai</p>
-              <p className="text-sm text-surface-500 mt-1">{genResult.created} jadwal dibuat, {genResult.skipped} dilewati</p>
-              <button onClick={() => { setModal(null); loadAll() }} className="btn-brand w-full py-3 mt-4">Tutup & Refresh</button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-sm text-surface-600">Sistem akan membuat jadwal dari semua recurring aktif dalam rentang tanggal ini.</p>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="label">Dari Tanggal</label>
-                  <input type="date" value={form.start_date || ''} onChange={e => setForm({ ...form, start_date: e.target.value })} className="input" />
                 </div>
-                <div>
-                  <label className="label">Sampai Tanggal</label>
-                  <input type="date" value={form.end_date || ''} onChange={e => setForm({ ...form, end_date: e.target.value })} className="input" />
-                </div>
+                <button onClick={downloadTemplate}
+                  className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 border border-slate-200 rounded-xl hover:bg-slate-100 transition">
+                  <Download className="w-3 h-3" /> Download Template
+                </button>
               </div>
-              <button onClick={generate} disabled={saving} className="btn-brand w-full py-3 flex items-center justify-center gap-2">
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                {saving ? 'Generating...' : 'Generate Sekarang'}
-              </button>
+
+              {/* Drop zone */}
+              <div
+                onClick={() => fileRef.current?.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
+                className="border-2 border-dashed border-slate-200 rounded-2xl p-10 text-center cursor-pointer hover:border-blue-300 hover:bg-blue-50/50 transition group"
+              >
+                <Upload className="w-8 h-8 text-slate-300 group-hover:text-blue-400 mx-auto mb-3 transition" />
+                <p className="font-bold text-slate-600 text-sm">Klik atau drag & drop file CSV</p>
+                <p className="text-xs text-slate-400 mt-1">Maks 10.000 baris per upload</p>
+                <input ref={fileRef} type="file" accept=".csv" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+              </div>
+
+              {errors.length > 0 && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl space-y-1">
+                  {errors.map((e, i) => (
+                    <p key={i} className="text-xs text-rose-600 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" /> {e}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-        </Modal>
-      )}
-    </AppLayout>
+
+          {step === 'preview' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-emerald-400 rounded-full" />
+                  <span className="text-sm font-bold text-slate-700">{rows.length} baris siap diimport</span>
+                </div>
+                <button onClick={() => { setStep('upload'); setRows([]); setErrors([]) }}
+                  className="text-xs text-blue-600 hover:underline font-semibold">Ganti file</button>
+              </div>
+
+              {errors.length > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                  <p className="text-xs font-bold text-amber-700 mb-1">Peringatan ({errors.length})</p>
+                  {errors.slice(0, 5).map((e, i) => (
+                    <p key={i} className="text-xs text-amber-600">{e}</p>
+                  ))}
+                  {errors.length > 5 && <p className="text-xs text-amber-500 mt-1">+{errors.length - 5} lainnya...</p>}
+                </div>
+              )}
+
+              {/* Preview table */}
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-bold text-slate-500">Email Sales</th>
+                      <th className="text-left px-3 py-2 font-bold text-slate-500">Kode Toko</th>
+                      <th className="text-left px-3 py-2 font-bold text-slate-500">Tanggal</th>
+                      <th className="text-left px-3 py-2 font-bold text-slate-500">Catatan</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {rows.slice(0, 20).map((row, i) => (
+                      <tr key={i} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 text-slate-600">{row.sales_email}</td>
+                        <td className="px-3 py-2 font-mono text-slate-700">{row.store_code}</td>
+                        <td className="px-3 py-2 text-slate-600">{row.visit_date}</td>
+                        <td className="px-3 py-2 text-slate-400 truncate max-w-[160px]">{row.notes || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rows.length > 20 && (
+                  <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 text-xs text-slate-400">
+                    +{rows.length - 20} baris lainnya tidak ditampilkan
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {step === 'result' && result && (
+            <div className="text-center py-8 space-y-4">
+              <div className={cn(
+                'w-16 h-16 rounded-full flex items-center justify-center mx-auto',
+                result.failed === 0 ? 'bg-emerald-100' : 'bg-amber-100'
+              )}>
+                {result.failed === 0
+                  ? <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+                  : <AlertTriangle className="w-8 h-8 text-amber-500" />
+                }
+              </div>
+              <div>
+                <p className="font-bold text-slate-900 text-lg">Import Selesai</p>
+                <div className="flex items-center justify-center gap-6 mt-3">
+                  <div className="text-center">
+                    <p className="text-2xl font-black text-emerald-600">{result.success}</p>
+                    <p className="text-xs text-slate-400">Berhasil</p>
+                  </div>
+                  {result.failed > 0 && (
+                    <div className="text-center">
+                      <p className="text-2xl font-black text-rose-500">{result.failed}</p>
+                      <p className="text-xs text-slate-400">Gagal</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-slate-100 flex gap-3">
+          <button onClick={onClose}
+            className="px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100 rounded-xl transition flex-1">
+            {step === 'result' ? 'Tutup' : 'Batal'}
+          </button>
+          {step === 'preview' && (
+            <button onClick={doImport} disabled={importing || rows.length === 0}
+              className="flex-[2] py-2 text-sm font-bold bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition flex items-center justify-center gap-2 disabled:opacity-60">
+              {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+              {importing ? 'Mengimport...' : `Import ${rows.length} Jadwal`}
+            </button>
+          )}
+          {step === 'result' && (
+            <button onClick={() => { onDone(); onClose() }}
+              className="flex-[2] py-2 text-sm font-bold bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition">
+              Selesai
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }
 
-/* ─── Sales: own schedules ───────────────────────────────────────────────── */
-function SalesSchedules() {
-  const [schedules, setSchedules] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0])
+// ─── Schedule Form Modal ──────────────────────────────────────────────────────
 
-  const load = async () => {
-    setLoading(true)
-    try { const r = await schedulesApi.my(date); setSchedules(r.data || []) }
-    finally { setLoading(false) }
+function ScheduleModal({ mode, schedule, salesList, onClose, onSave }: {
+  mode: 'create' | 'edit'
+  schedule?: Schedule
+  salesList: SalesUser[]
+  onClose: () => void
+  onSave: () => void
+}) {
+  const [form, setForm] = useState({
+    sales_id: schedule?.sales_id?.toString() ?? '',
+    store_id: schedule?.store_id?.toString() ?? '',
+    visit_date: schedule?.visit_date?.slice(0, 10) ?? isoDate(new Date()),
+    notes: schedule?.notes ?? '',
+    status: schedule?.status ?? 'scheduled',
+  })
+  const [stores, setStores] = useState<StoreItem[]>([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const STATUS_OPTIONS = ["scheduled", "completed", "skipped"] as const;
+  type VisitStatus = typeof STATUS_OPTIONS[number]; // "scheduled" | "completed" | "skipped"
+
+  useEffect(() => {
+    apiFetch('/api/stores?active_only=true').then(r => setStores(r.data || [])).catch(() => { })
+  }, [])
+
+  const f = (key: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+    setForm(p => ({ ...p, [key]: e.target.value }))
+
+  const handleSave = async () => {
+    if (!form.sales_id || !form.store_id || !form.visit_date) {
+      setError('Sales, toko, dan tanggal wajib diisi'); return
+    }
+    setSaving(true); setError('')
+    try {
+      const body = {
+        sales_id: Number(form.sales_id),
+        store_id: Number(form.store_id),
+        visit_date: form.visit_date,
+        notes: form.notes,
+      }
+      if (mode === 'create') {
+        await apiFetch('/api/schedules', { method: 'POST', body: JSON.stringify(body) })
+      } else {
+        await apiFetch(`/api/schedules/${schedule!.ID}`, {
+          method: 'PUT',
+          body: JSON.stringify({ ...body, status: form.status }),
+        })
+      }
+      onSave()
+    } catch (e: any) { setError(e.message) }
+    finally { setSaving(false) }
   }
-  useEffect(() => { load() }, [date])
+
+  const inputCls = "w-full text-sm border border-slate-200 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-300 bg-slate-50"
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h2 className="font-bold text-slate-900">{mode === 'create' ? 'Tambah Jadwal' : 'Edit Jadwal'}</h2>
+          <button onClick={onClose} className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-xl">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {error && (
+            <div className="px-4 py-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-600 text-sm">{error}</div>
+          )}
+
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Tanggal *</label>
+            <input type="date" value={form.visit_date} onChange={f('visit_date')} className={cn(inputCls, 'mt-1.5 font-mono')} />
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Sales *</label>
+            <select value={form.sales_id} onChange={f('sales_id')} className={cn(inputCls, 'mt-1.5')}>
+              <option value="">Pilih sales...</option>
+              {salesList.filter(s => s.is_active).map(s => (
+                <option key={s.ID} value={s.ID}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Toko *</label>
+            <select value={form.store_id} onChange={f('store_id')} className={cn(inputCls, 'mt-1.5')}>
+              <option value="">Pilih toko...</option>
+              {stores.map(s => (
+                <option key={s.ID} value={s.ID}>{s.name} ({s.code}){s.city ? ` — ${s.city}` : ''}</option>
+              ))}
+            </select>
+          </div>
+
+          {mode === 'edit' && (
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Status</label>
+              <div className="grid grid-cols-3 gap-2 mt-1.5">
+                {Object.entries(STATUS_MAP).map(([v, cfg]) => (
+                  <button
+                    key={v}
+                    // onClick={() => setForm(p => ({ ...p, status: v }))}
+                    onClick={() => setForm(p => ({ ...p, status: v as VisitStatus }))}
+                    disabled={schedule?.status === 'completed'}
+                    className={cn(
+                      'py-2 text-xs font-bold rounded-xl border transition flex flex-col items-center gap-1',
+                      form.status === v ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50',
+                      schedule?.status === 'completed' ? 'opacity-50 cursor-not-allowed' : ''
+                    )}
+                  >
+                    <cfg.icon className="w-3.5 h-3.5" />
+                    {cfg.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Catatan</label>
+            <textarea value={form.notes} onChange={f('notes')} rows={2} placeholder="Opsional..."
+              className={cn(inputCls, 'mt-1.5 resize-none')} />
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-slate-100 flex gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100 rounded-xl transition flex-1">
+            Batal
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-[2] py-2 text-sm font-bold bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition flex items-center justify-center gap-2 disabled:opacity-60">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {saving ? 'Menyimpan...' : mode === 'create' ? 'Buat Jadwal' : 'Simpan'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Calendar View ────────────────────────────────────────────────────────────
+
+function CalendarView({ schedules, month, onMonthChange, onDayClick }: {
+  schedules: Schedule[]
+  month: Date
+  onMonthChange: (d: Date) => void
+  onDayClick: (date: string) => void
+}) {
+  const days = getDaysInMonth(month)
+  const firstDow = startOfMonth(month).getDay() // 0=Sun
+  const adjustedFirstDow = firstDow === 0 ? 6 : firstDow - 1 // Mon-start
+
+  const byDate = useMemo(() => {
+    const map = new Map<string, Schedule[]>()
+    for (const s of schedules) {
+      const d = s.visit_date.slice(0, 10)
+      if (!map.has(d)) map.set(d, [])
+      map.get(d)!.push(s)
+    }
+    return map
+  }, [schedules])
+
+  const DOW = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min']
+  const today = isoDate(new Date())
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+      {/* Month header */}
+      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+        <button onClick={() => onMonthChange(addMonths(month, -1))}
+          className="p-1.5 hover:bg-slate-100 rounded-xl transition">
+          <ChevronLeft className="w-4 h-4 text-slate-500" />
+        </button>
+        <span className="font-bold text-slate-800 capitalize">{monthLabel(month)}</span>
+        <button onClick={() => onMonthChange(addMonths(month, 1))}
+          className="p-1.5 hover:bg-slate-100 rounded-xl transition">
+          <ChevronRight className="w-4 h-4 text-slate-500" />
+        </button>
+      </div>
+
+      {/* DOW headers */}
+      <div className="grid grid-cols-7 border-b border-slate-100">
+        {DOW.map(d => (
+          <div key={d} className="text-center py-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            {d}
+          </div>
+        ))}
+      </div>
+
+      {/* Grid */}
+      <div className="grid grid-cols-7">
+        {/* Empty cells */}
+        {Array.from({ length: adjustedFirstDow }).map((_, i) => (
+          <div key={`empty-${i}`} className="border-r border-b border-slate-100 min-h-[90px] bg-slate-50/50" />
+        ))}
+
+        {days.map(day => {
+          const ds = isoDate(day)
+          const items = byDate.get(ds) || []
+          const isToday = ds === today
+          const isWeekend = day.getDay() === 0 || day.getDay() === 6
+          const completed = items.filter(s => s.status === 'completed').length
+          const scheduled = items.filter(s => s.status === 'scheduled').length
+          const skipped = items.filter(s => s.status === 'skipped').length
+
+          return (
+            <div
+              key={ds}
+              onClick={() => items.length > 0 && onDayClick(ds)}
+              className={cn(
+                'border-r border-b border-slate-100 min-h-[90px] p-1.5 transition-all',
+                items.length > 0 ? 'cursor-pointer hover:bg-blue-50/50' : '',
+                isWeekend ? 'bg-slate-50/50' : ''
+              )}
+            >
+              <div className={cn(
+                'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold mb-1',
+                isToday ? 'bg-blue-600 text-white' : 'text-slate-500'
+              )}>
+                {day.getDate()}
+              </div>
+
+              {items.length > 0 && (
+                <div className="space-y-0.5">
+                  {/* Summary dots */}
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {completed > 0 && (
+                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 rounded-md leading-4">
+                        {completed}✓
+                      </span>
+                    )}
+                    {scheduled > 0 && (
+                      <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-1.5 rounded-md leading-4">
+                        {scheduled}~
+                      </span>
+                    )}
+                    {skipped > 0 && (
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 rounded-md leading-4">
+                        {skipped}×
+                      </span>
+                    )}
+                  </div>
+                  {/* First 2 items preview */}
+                  {items.slice(0, 2).map(s => (
+                    <div key={s.ID} className={cn(
+                      'text-[10px] px-1.5 py-0.5 rounded-md truncate font-medium leading-4',
+                      STATUS_MAP[s.status]?.badge
+                    )}>
+                      {s.sales?.name?.split(' ')[0]} · {s.store?.code}
+                    </div>
+                  ))}
+                  {items.length > 2 && (
+                    <div className="text-[10px] text-slate-400 px-1.5">+{items.length - 2} lagi</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── Table View ───────────────────────────────────────────────────────────────
+
+function TableView({
+  schedules, selected, onSelect, onSelectAll, onEdit, onDelete, loading,
+}: {
+  schedules: Schedule[]
+  selected: Set<number>
+  onSelect: (id: number, checked: boolean) => void
+  onSelectAll: (checked: boolean) => void
+  onEdit: (s: Schedule) => void
+  onDelete: (s: Schedule) => void
+  loading: boolean
+}) {
+  const allChecked = schedules.length > 0 && selected.size === schedules.length
+  const someChecked = selected.size > 0 && selected.size < schedules.length
+
+  const cols = [
+    { key: 'date', label: 'Tanggal', w: 'w-32' },
+    { key: 'sales', label: 'Sales', w: 'w-40' },
+    { key: 'store', label: 'Toko', w: '' },
+    { key: 'area', label: 'Area', w: 'w-36' },
+    { key: 'status', label: 'Status', w: 'w-32' },
+    { key: 'notes', label: 'Catatan', w: 'w-40' },
+    { key: 'actions', label: '', w: 'w-16' },
+  ]
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th className="w-10 px-4 py-3 text-left">
+                <Checkbox
+                  checked={allChecked}
+                  indeterminate={someChecked}
+                  onChange={onSelectAll}
+                />
+              </th>
+              {cols.map(c => (
+                <th key={c.key} className={cn('text-left px-3 py-3 text-xs font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap', c.w)}>
+                  {c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {loading ? (
+              Array.from({ length: 8 }).map((_, i) => (
+                <tr key={i}>
+                  {Array.from({ length: cols.length + 1 }).map((_, j) => (
+                    <td key={j} className="px-3 py-3">
+                      <div className="h-4 bg-slate-100 rounded animate-pulse" style={{ width: `${60 + Math.random() * 40}%` }} />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : schedules.length === 0 ? (
+              <tr>
+                <td colSpan={cols.length + 1} className="text-center py-16 text-slate-400">
+                  <CalendarDays className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                  <p className="font-semibold text-slate-500 text-sm">Tidak ada jadwal</p>
+                </td>
+              </tr>
+            ) : (
+              schedules.map(s => {
+                const area = s.store?.area
+                const region = area?.region
+                const isSelected = selected.has(s.ID)
+
+                return (
+                  <tr
+                    key={s.ID}
+                    className={cn(
+                      'group hover:bg-slate-50 transition-colors',
+                      isSelected ? 'bg-blue-50/60' : '',
+                      s.status === 'skipped' ? 'opacity-60' : ''
+                    )}
+                  >
+                    <td className="w-10 px-4 py-3">
+                      <Checkbox
+                        checked={isSelected}
+                        onChange={v => onSelect(s.ID, v)}
+                      />
+                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500 font-mono">
+                      {fmtDateShort(s.visit_date)}
+                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <span className="text-sm font-semibold text-slate-800">{s.sales?.name ?? '-'}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div>
+                        <p className="font-semibold text-slate-800 text-sm">{s.store?.name ?? '-'}</p>
+                        <p className="text-xs text-slate-400 font-mono">{s.store?.code ?? ''}{s.store?.city ? ` · ${s.store.city}` : ''}</p>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">
+                      {region?.name && <span className="text-slate-400">{region.name} › </span>}
+                      {area?.name ? <span className="text-blue-600 font-medium">{area.name}</span> : '-'}
+                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <StatusBadge status={s.status} />
+                    </td>
+                    <td className="px-3 py-3 text-xs text-slate-400 max-w-[160px] truncate">
+                      {s.notes || <span className="italic">—</span>}
+                    </td>
+                    <td className="px-3 py-3">
+                      {s.status !== 'completed' && (
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                          <button onClick={() => onEdit(s)}
+                            className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition">
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => onDelete(s)}
+                            className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Footer with count */}
+      {!loading && schedules.length > 0 && (
+        <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
+          <span className="text-xs text-slate-400">{schedules.length} jadwal</span>
+          {selected.size > 0 && (
+            <span className="text-xs font-semibold text-blue-600">{selected.size} dipilih</span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Stats Bar ────────────────────────────────────────────────────────────────
+
+function StatsBar({ schedules }: { schedules: Schedule[] }) {
+  const total = schedules.length
+  const completed = schedules.filter(s => s.status === 'completed').length
+  const scheduled = schedules.filter(s => s.status === 'scheduled').length
+  const skipped = schedules.filter(s => s.status === 'skipped').length
+  const pct = total ? Math.round((completed / total) * 100) : 0
+
+  return (
+    <div className="grid grid-cols-4 gap-3">
+      {[
+        { label: 'Total', value: total, color: 'text-slate-800', dot: 'bg-slate-400' },
+        { label: 'Dijadwalkan', value: scheduled, color: 'text-amber-600', dot: 'bg-amber-400' },
+        { label: 'Selesai', value: completed, color: 'text-emerald-600', dot: 'bg-emerald-500' },
+        { label: 'Dilewati', value: skipped, color: 'text-slate-400', dot: 'bg-slate-300' },
+      ].map(({ label, value, color, dot }) => (
+        <div key={label} className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-3">
+          <span className={cn('w-2.5 h-2.5 rounded-full shrink-0', dot)} />
+          <div>
+            <p className={cn('text-xl font-black', color)}>{value}</p>
+            <p className="text-xs text-slate-400 font-medium">{label}</p>
+          </div>
+          {label === 'Selesai' && total > 0 && (
+            <span className="ml-auto text-xs font-bold text-emerald-500">{pct}%</span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+export default function SchedulesPage() {
+  const [schedules, setSchedules] = useState<Schedule[]>([])
+  const [salesList, setSalesList] = useState<SalesUser[]>([])
+  const [areaList, setAreaList] = useState<Area[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // View
+  const [viewMode, setViewMode] = useState<ViewMode>('table')
+
+  // Date range — month mode
+  const [calMonth, setCalMonth] = useState(new Date())
+
+  // Filters (shared between views)
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date(); d.setDate(1)
+    return isoDate(d)
+  })
+  const [dateTo, setDateTo] = useState(() => {
+    const d = endOfMonth(new Date()); return isoDate(d)
+  })
+  const [search, setSearch] = useState('')
+  const [filters, setFilters] = useState({ sales_id: '', area_id: '', status: '' })
+
+  // Selection
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+
+  // Modals
+  const [modal, setModal] = useState<'create' | 'edit' | 'import' | null>(null)
+  const [selectedSchedule, setSelectedSchedule] = useState<Schedule | undefined>()
+
+  // Sync calendar month → date range
+  useEffect(() => {
+    if (viewMode === 'calendar') {
+      setDateFrom(isoDate(startOfMonth(calMonth)))
+      setDateTo(isoDate(endOfMonth(calMonth)))
+    }
+  }, [calMonth, viewMode])
+
+  // Load meta
+  useEffect(() => {
+    Promise.all([
+      usersApi.list({ role: 'sales' }).catch(() => ({ data: [] })),
+      areasApi.list({}).catch(() => ({ data: [] })),
+    ]).then(([uRes, aRes]) => {
+      setSalesList(uRes.data || [])
+      setAreaList(aRes.data || [])
+    })
+  }, [])
+
+  const loadSchedules = useCallback(async () => {
+    setLoading(true)
+    setSelected(new Set())
+    try {
+      const q = new URLSearchParams()
+      q.set('date_from', dateFrom)
+      q.set('date_to', dateTo)
+      if (filters.sales_id) q.set('sales_id', filters.sales_id)
+      if (filters.area_id) q.set('area_id', filters.area_id)
+      if (filters.status) q.set('status', filters.status)
+
+      const data = await apiFetch(`/api/schedules?${q}`)
+      setSchedules(data.data || [])
+    } catch { setSchedules([]) }
+    finally { setLoading(false) }
+  }, [dateFrom, dateTo, filters])
+
+  useEffect(() => { loadSchedules() }, [loadSchedules])
+
+  // Client search
+  const displayed = useMemo(() => {
+    if (!search) return schedules
+    const q = search.toLowerCase()
+    return schedules.filter(s =>
+      s.store?.name?.toLowerCase().includes(q) ||
+      s.store?.code?.toLowerCase().includes(q) ||
+      s.sales?.name?.toLowerCase().includes(q) ||
+      s.store?.city?.toLowerCase().includes(q)
+    )
+  }, [schedules, search])
+
+  // Selection
+  const handleSelect = (id: number, checked: boolean) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(id); else next.delete(id)
+      return next
+    })
+  }
+  const handleSelectAll = (checked: boolean) => {
+    setSelected(checked ? new Set(displayed.map(s => s.ID)) : new Set())
+  }
+
+  // Bulk actions
+  const bulkStatus = async (status: Schedule['status']) => {
+    const ids = Array.from(selected)
+    try {
+      await apiFetch('/api/schedules/bulk-status', {
+        method: 'PUT',
+        body: JSON.stringify({ ids, status }),
+      })
+    } catch (e: any) { alert(e.message) }
+    await loadSchedules()
+  }
+
+  const bulkDelete = async () => {
+    const ids = Array.from(selected)
+    if (!confirm(`Hapus ${ids.length} jadwal yang dipilih?`)) return
+    try {
+      await apiFetch('/api/schedules/bulk-delete', {
+        method: 'DELETE',
+        body: JSON.stringify({ ids }),
+      })
+    } catch (e: any) { alert(e.message) }
+    await loadSchedules()
+  }
+
+  const deleteSingle = async (s: Schedule) => {
+    if (!confirm(`Hapus jadwal "${s.store?.name}"?`)) return
+    try {
+      await apiFetch(`/api/schedules/${s.ID}`, { method: 'DELETE' })
+      await loadSchedules()
+    } catch (e: any) { alert(e.message) }
+  }
+
+  // Month quick set
+  const setThisMonth = () => {
+    const d = new Date()
+    setCalMonth(d)
+    setDateFrom(isoDate(startOfMonth(d)))
+    setDateTo(isoDate(endOfMonth(d)))
+  }
+
+  const setMonthRange = (m: Date) => {
+    setCalMonth(m)
+    setDateFrom(isoDate(startOfMonth(m)))
+    setDateTo(isoDate(endOfMonth(m)))
+  }
+
+  const activeFilterCount = [filters.sales_id, filters.area_id, filters.status].filter(Boolean).length
 
   return (
     <AppLayout>
-      <div className="p-4 space-y-4 animate-fade-in">
-        <div className="flex items-center justify-between pt-2">
-          <h1 className="text-xl font-extrabold">Jadwal Saya</h1>
-          <button onClick={load} className="p-2 text-surface-400 hover:text-brand-500 hover:bg-brand-50 rounded-xl transition">
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        </div>
-        <input type="date" value={date} onChange={e => setDate(e.target.value)} className="input" />
-        {loading ? <Skeleton /> : schedules.length === 0 ? (
-          <Empty label="Tidak ada jadwal hari ini" />
-        ) : (
-          <div className="space-y-3">
-            {schedules.map((s: any) => (
-              <div key={s.ID} className={cn('card p-4 border-l-4',
-                s.status === 'completed' ? 'border-green-400' :
-                  s.status === 'in_progress' ? 'border-amber-400' : 'border-surface-200')}>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="font-bold text-surface-900">{s.store?.name}</p>
-                    <p className="text-xs text-surface-500">{s.store?.city} · {s.store?.address}</p>
-                  </div>
-                  <StatusBadge status={s.status} />
-                </div>
-                {!s.visit && s.status === 'scheduled' && (
-                  <a href={`/schedules/${s.ID}/checkin`}
-                    className="btn-brand w-full py-2.5 text-sm mt-3 flex items-center justify-center gap-1.5">
-                    📍 Check-In
-                  </a>
-                )}
-                {s.visit?.status === 'checked_in' && (
-                  <a href={`/visits/${s.visit.ID}/checkout`}
-                    className="btn-brand w-full py-2.5 text-sm mt-3 flex items-center justify-center gap-1.5"
-                    style={{ background: '#f59e0b' }}>
-                    📦 Input Stok & Check-Out
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </AppLayout>
-  )
-}
+      <div className="p-6 space-y-5">
 
-/* ─── Shared UI ──────────────────────────────────────────────────────────── */
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center p-0 sm:p-4">
-      <div className="bg-white w-full sm:max-w-md sm:mx-auto rounded-t-4xl sm:rounded-4xl max-h-[90vh] overflow-y-auto animate-slide-up">
-        <div className="p-5">
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="text-lg font-extrabold">{title}</h2>
-            <button onClick={onClose} className="p-1.5 text-surface-400 hover:text-surface-700 hover:bg-surface-100 rounded-xl transition">
-              <X className="w-5 h-5" />
+        {/* ── Header ── */}
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Jadwal Kunjungan</h1>
+            <p className="text-sm text-slate-400 mt-0.5">
+              {loading ? 'Memuat...' : `${schedules.length} jadwal`}
+              {activeFilterCount > 0 && ` · ${activeFilterCount} filter aktif`}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Import */}
+            <button
+              onClick={() => setModal('import')}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 bg-white text-slate-700 rounded-xl hover:bg-slate-50 transition"
+            >
+              <Upload className="w-4 h-4" /> Import CSV
+            </button>
+            {/* Export */}
+            <button
+              className="flex items-center gap-2 px-3 py-2 text-sm font-semibold border border-slate-200 bg-white text-slate-700 rounded-xl hover:bg-slate-50 transition"
+            >
+              <Download className="w-4 h-4" /> Export
+            </button>
+            {/* Add */}
+            <button
+              onClick={() => { setSelectedSchedule(undefined); setModal('create') }}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-bold bg-blue-600 text-white rounded-xl hover:bg-blue-700 active:scale-95 transition"
+            >
+              <Plus className="w-4 h-4" /> Tambah Jadwal
             </button>
           </div>
-          {children}
         </div>
-      </div>
-    </div>
-  )
-}
 
-function ErrBox({ msg }: { msg: string }) {
-  return <div className="mb-3 px-4 py-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-sm">{msg}</div>
-}
-function Skeleton() {
-  return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-20 bg-surface-100 rounded-3xl animate-pulse" />)}</div>
-}
-function Empty({ label }: { label: string }) {
-  return (
-    <div className="text-center py-12 text-surface-400">
-      <CalendarDays className="w-10 h-10 mx-auto mb-3 opacity-30" />
-      <p className="font-semibold">{label}</p>
-    </div>
+        {/* ── Stats ── */}
+        {!loading && <StatsBar schedules={schedules} />}
+
+        {/* ── Toolbar ── */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Date range */}
+          <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2">
+            <CalendarDays className="w-4 h-4 text-slate-400 shrink-0" />
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+              className="text-sm font-mono text-slate-700 border-0 bg-transparent focus:outline-none w-32"
+            />
+            <span className="text-slate-300">–</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+              className="text-sm font-mono text-slate-700 border-0 bg-transparent focus:outline-none w-32"
+            />
+            <button onClick={setThisMonth}
+              className="text-[11px] font-bold text-blue-600 hover:underline ml-1 whitespace-nowrap">
+              Bulan ini
+            </button>
+          </div>
+
+          {/* Month nav (calendar mode) */}
+          {viewMode === 'calendar' && (
+            <div className="flex items-center gap-1">
+              <button onClick={() => setMonthRange(addMonths(calMonth, -1))}
+                className="p-1.5 border border-slate-200 rounded-xl hover:bg-slate-100 transition">
+                <ChevronLeft className="w-4 h-4 text-slate-500" />
+              </button>
+              <span className="text-sm font-bold text-slate-700 px-2 capitalize">{monthLabel(calMonth)}</span>
+              <button onClick={() => setMonthRange(addMonths(calMonth, 1))}
+                className="p-1.5 border border-slate-200 rounded-xl hover:bg-slate-100 transition">
+                <ChevronRight className="w-4 h-4 text-slate-500" />
+              </button>
+            </div>
+          )}
+
+          {/* Search */}
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Cari toko, sales, kota..."
+              className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300 bg-white"
+            />
+          </div>
+
+          {/* Filters */}
+          <div className="flex items-center gap-2">
+            <select
+              value={filters.sales_id}
+              onChange={e => setFilters(p => ({ ...p, sales_id: e.target.value }))}
+              className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+            >
+              <option value="">Semua Sales</option>
+              {salesList.map(s => <option key={s.ID} value={s.ID}>{s.name}</option>)}
+            </select>
+
+            <select
+              value={filters.area_id}
+              onChange={e => setFilters(p => ({ ...p, area_id: e.target.value }))}
+              className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+            >
+              <option value="">Semua Area</option>
+              {areaList.map(a => <option key={a.ID} value={a.ID}>{a.name}</option>)}
+            </select>
+
+            <select
+              value={filters.status}
+              onChange={e => setFilters(p => ({ ...p, status: e.target.value }))}
+              className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-300"
+            >
+              <option value="">Semua Status</option>
+              {Object.entries(STATUS_MAP).map(([v, cfg]) => <option key={v} value={v}>{cfg.label}</option>)}
+            </select>
+
+            {activeFilterCount > 0 && (
+              <button
+                onClick={() => setFilters({ sales_id: '', area_id: '', status: '' })}
+                className="text-xs font-bold text-rose-500 hover:underline flex items-center gap-1"
+              >
+                <X className="w-3 h-3" /> Reset
+              </button>
+            )}
+          </div>
+
+          {/* View toggle */}
+          <div className="flex items-center bg-slate-100 rounded-xl p-1 ml-auto shrink-0">
+            <button
+              onClick={() => setViewMode('table')}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition',
+                viewMode === 'table' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700')}
+            >
+              <LayoutList className="w-3.5 h-3.5" /> Tabel
+            </button>
+            <button
+              onClick={() => setViewMode('calendar')}
+              className={cn('flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition',
+                viewMode === 'calendar' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700')}
+            >
+              <CalendarDays className="w-3.5 h-3.5" /> Kalender
+            </button>
+          </div>
+
+          {/* Refresh */}
+          <button onClick={loadSchedules}
+            className={cn('p-2 border border-slate-200 rounded-xl hover:bg-slate-100 transition', loading && 'animate-spin opacity-50')}>
+            <RefreshCw className="w-4 h-4 text-slate-500" />
+          </button>
+        </div>
+
+        {/* ── Bulk action bar ── */}
+        {selected.size > 0 && (
+          <BulkActionBar
+            count={selected.size}
+            onClose={() => setSelected(new Set())}
+            onDelete={bulkDelete}
+            onStatus={bulkStatus}
+          />
+        )}
+
+        {/* ── Content ── */}
+        {viewMode === 'table' ? (
+          <TableView
+            schedules={displayed}
+            selected={selected}
+            onSelect={handleSelect}
+            onSelectAll={handleSelectAll}
+            onEdit={s => { setSelectedSchedule(s); setModal('edit') }}
+            onDelete={deleteSingle}
+            loading={loading}
+          />
+        ) : (
+          <CalendarView
+            schedules={displayed}
+            month={calMonth}
+            onMonthChange={setMonthRange}
+            onDayClick={date => {
+              // Switch to table view filtered by that date
+              setDateFrom(date)
+              setDateTo(date)
+              setViewMode('table')
+            }}
+          />
+        )}
+      </div>
+
+      {/* ── Modals ── */}
+      {(modal === 'create' || modal === 'edit') && (
+        <ScheduleModal
+          mode={modal}
+          schedule={selectedSchedule}
+          salesList={salesList}
+          onClose={() => setModal(null)}
+          onSave={() => { setModal(null); loadSchedules() }}
+        />
+      )}
+
+      {modal === 'import' && (
+        <ImportModal
+          salesList={salesList}
+          onClose={() => setModal(null)}
+          onDone={loadSchedules}
+        />
+      )}
+    </AppLayout>
   )
 }

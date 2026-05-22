@@ -6,21 +6,21 @@ function token() {
 }
 
 // async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
-export async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
+// export async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
-  const t = token()
-  const res = await fetch(`${API}${path}`, {
-    ...opts,
-    headers: {
-      ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(t ? { Authorization: `Bearer ${t}` } : {}),
-      ...opts.headers,
-    },
-  })
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-  return data as T
-}
+//   const t = token()
+//   const res = await fetch(`${API}${path}`, {
+//     ...opts,
+//     headers: {
+//       ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+//       ...(t ? { Authorization: `Bearer ${t}` } : {}),
+//       ...opts.headers,
+//     },
+//   })
+//   const data = await res.json()
+//   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+//   return data as T
+// }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export const authApi = {
@@ -116,16 +116,20 @@ export const recurringApi = {
 
 // ─── Visits ───────────────────────────────────────────────────────────────────
 export const visitsApi = {
-  list: (params?: { sales_id?: string; store_id?: string; date?: string; today?: boolean; status?: string }) => {
+  list: (params?: {
+    sales_id?: string; store_id?: string; date?: string; today?: boolean; status?: string; supervisor_id?: string
+  }) => {
     const q = new URLSearchParams()
     if (params?.sales_id) q.set('sales_id', params.sales_id)
     if (params?.store_id) q.set('store_id', params.store_id)
     if (params?.date) q.set('date', params.date)
     if (params?.today) q.set('today', 'true')
     if (params?.status) q.set('status', params.status)
+    if (params?.supervisor_id) q.set('supervisor_id', params.supervisor_id)
     return req<{ data: any[] }>(`/api/visits?${q}`)
   },
   get: (id: number) => req<any>(`/api/visits/${id}`),
+
   my: (date?: string) => {
     const q = new URLSearchParams()
     if (date) q.set('date', date)
@@ -152,6 +156,28 @@ export const visitsApi = {
     req<any>(`/api/visits/draft/${visitId}`, { method: 'PATCH', body: JSON.stringify(data) }),
 }
 
+// ─── Supervisor Team ──────────────────────────────────────────────────────────
+export const supervisorApi = {
+  // Admin: kelola tim supervisor
+  getSupervisors: () => req<{ data: any[] }>('/api/admin/supervisors'),
+  getTeam: (supervisorId: number) =>
+    req<{ data: any[] }>(`/api/admin/supervisors/${supervisorId}/team`),
+  setTeam: (supervisorId: number, sales_ids: number[]) =>
+    req<any>(`/api/admin/supervisors/${supervisorId}/team`, {
+      method: 'PUT', body: JSON.stringify({ sales_ids }),
+    }),
+  // Supervisor: lihat tim sendiri
+  myTeam: () => req<{ data: any[] }>('/api/supervisor/team'),
+  // Supervisor: list & edit users di tim sendiri
+  myTeamUsers: (params?: { active_only?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.active_only) q.set('active_only', 'true')
+    return req<{ data: any[] }>(`/api/supervisor/users?${q}`)
+  },
+  updateTeamUser: (id: number, data: any) =>
+    req<any>(`/api/supervisor/users/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 export const dashboardApi = {
   summary: () => req<any>('/api/dashboard/summary'),
@@ -165,6 +191,58 @@ export const dashboardApi = {
     if (params?.today) q.set('today', 'true')
     return req<{ data: any[] }>(`/api/dashboard/stock-report?${q}`)
   },
+}
+
+// ─── Companies (super_admin) ──────────────────────────────────────────────────
+export const companiesApi = {
+  list: (params?: { search?: string; active_only?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.search) q.set('search', params.search)
+    if (params?.active_only) q.set('active_only', 'true')
+    return req<{ data: any[]; total: number }>(`/api/super/companies?${q}`)
+  },
+  get: (id: number) => req<any>(`/api/super/companies/${id}`),
+  create: (data: { name: string; code: string; address?: string; phone?: string; email?: string }) =>
+    req<any>('/api/super/companies', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: number, data: Partial<{ name: string; code: string; address: string; phone: string; email: string }>) =>
+    req<any>(`/api/super/companies/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  remove: (id: number) =>
+    req<any>(`/api/super/companies/${id}`, { method: 'DELETE' }),
+}
+
+// ─── Regions (company_admin) ──────────────────────────────────────────────────
+export const regionsApi = {
+  list: (params?: { search?: string; active_only?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.search) q.set('search', params.search)
+    if (params?.active_only) q.set('active_only', 'true')
+    return req<{ data: any[]; total: number }>(`/api/regions?${q}`)
+  },
+  get: (id: number) => req<any>(`/api/regions/${id}`),
+  create: (data: { name: string; code: string; is_active?: boolean }) =>
+    req<any>('/api/regions', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: number, data: Partial<{ name: string; code: string; is_active: boolean }>) =>
+    req<any>(`/api/regions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  remove: (id: number) =>
+    req<any>(`/api/regions/${id}`, { method: 'DELETE' }),
+}
+
+// ─── Areas (company_admin) ────────────────────────────────────────────────────
+export const areasApi = {
+  list: (params?: { search?: string; active_only?: boolean; region_id?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.search) q.set('search', params.search)
+    if (params?.active_only) q.set('active_only', 'true')
+    if (params?.region_id) q.set('region_id', String(params.region_id))
+    return req<{ data: any[]; total: number }>(`/api/areas?${q}`)
+  },
+  get: (id: number) => req<any>(`/api/areas/${id}`),
+  create: (data: { name: string; code: string; region_id: number; is_active?: boolean }) =>
+    req<any>('/api/areas', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: number, data: Partial<{ name: string; code: string; region_id: number; is_active: boolean }>) =>
+    req<any>(`/api/areas/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  remove: (id: number) =>
+    req<any>(`/api/areas/${id}`, { method: 'DELETE' }),
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -185,13 +263,14 @@ export const DAY_NAMES = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat',
 // ─── Orders ───────────────────────────────────────────────────────────────────
 export const ordersApi = {
   // Admin
-  list: (params?: { sales_id?: string; store_id?: string; visit_id?: string; status?: string; date?: string }) => {
+  list: (params?: { sales_id?: string; store_id?: string; visit_id?: string; status?: string; date?: string; supervisor_id?: string }) => {
     const q = new URLSearchParams()
     if (params?.sales_id) q.set('sales_id', params.sales_id)
     if (params?.store_id) q.set('store_id', params.store_id)
     if (params?.visit_id) q.set('visit_id', params.visit_id)
     if (params?.status) q.set('status', params.status)
     if (params?.date) q.set('date', params.date)
+    if (params?.supervisor_id) q.set('supervisor_id', params.supervisor_id)
     return req<{ data: any[]; total: number }>(`/api/orders?${q}`)
   },
   get: (id: number) => req<any>(`/api/my/orders/${id}`),
@@ -214,4 +293,60 @@ export const ordersApi = {
   getAdmin: (id: number) => req<any>(`/api/orders/${id}`),
   byVisit: (visitId: number) =>
     req<{ data: any[]; total: number }>(`/api/visits/${visitId}/orders`),
+}
+
+// Custom error classes
+export class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message)
+    this.name = 'HttpError'
+  }
+}
+
+export class ForbiddenError extends HttpError {
+  constructor(message = 'Access denied') {
+    super(403, message)
+    this.name = 'ForbiddenError'
+  }
+}
+
+export async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const t = token()
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: {
+      ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      ...opts.headers,
+    },
+  })
+
+  const data = await res.json()
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      // Token expired / not logged in
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
+      throw new HttpError(401, 'Unauthorized')
+    }
+
+    if (res.status === 403) {
+      if (typeof window !== 'undefined') {
+        window.location.href = '/access-denied'
+        return {} as T
+      }
+      throw new ForbiddenError(data.error || 'Forbidden')
+    }
+
+    if (res.status === 403) {
+      throw new ForbiddenError(data.error || 'You do not have permission to access this resource')
+    }
+
+    throw new HttpError(res.status, data.error || `HTTP ${res.status}`)
+  }
+
+  return data as T
 }
