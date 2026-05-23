@@ -7,6 +7,7 @@ import {
   Radio, ChevronRight, Loader2, Signal
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useMap } from 'react-leaflet'
 
 // ─── Leaflet dynamic import (no SSR) ─────────────────────────────────────────
 const MapContainer = dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false })
@@ -121,6 +122,14 @@ function SalesMarker({ loc, isSelected, onClick }: {
       </Popup>
     </Marker>
   )
+}
+
+function MapController({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap()
+  useEffect(() => {
+    map.flyTo(center, zoom, { duration: 1 })
+  }, [center, zoom])
+  return null
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -358,6 +367,15 @@ export default function TrackingPage() {
                 url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
                 maxZoom={21}
                 maxNativeZoom={21}
+              />
+
+              <MapController
+                center={
+                  selectedLoc
+                    ? [selectedLoc.lat, selectedLoc.lng]
+                    : center
+                }
+                zoom={selectedUser !== null ? 15 : 13}
               />
               {locations.map(loc => (
                 <SalesMarker
