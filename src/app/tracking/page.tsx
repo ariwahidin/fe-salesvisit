@@ -124,11 +124,21 @@ function SalesMarker({ loc, isSelected, onClick }: {
   )
 }
 
-function MapController({ center, zoom }: { center: [number, number]; zoom: number }) {
+function MapController({ selectedUser, selectedLoc }: {
+  selectedUser: number | null
+  selectedLoc: LiveLocation | undefined
+}) {
   const map = useMap()
+  const prevSelected = useRef<number | null>(null)
+
   useEffect(() => {
-    map.flyTo(center, zoom, { duration: 1 })
-  }, [center, zoom])
+    // flyTo HANYA kalau selectedUser berubah, bukan saat data refresh
+    if (selectedUser !== null && selectedLoc && prevSelected.current !== selectedUser) {
+      map.flyTo([selectedLoc.lat, selectedLoc.lng], 15, { duration: 1 })
+    }
+    prevSelected.current = selectedUser
+  }, [selectedUser]) // ← dependency hanya selectedUser, bukan selectedLoc
+
   return null
 }
 
@@ -227,7 +237,14 @@ export default function TrackingPage() {
               <input
                 type="date"
                 value={date}
-                onChange={e => { setDate(e.target.value); setSelectedUser(null) }}
+                onChange={e => {
+                  setDate(e.target.value)
+                  setSelectedUser(null)
+                  setLoading(true)  // ← tambah ini
+                }}
+                // onChange={e => {
+                //   setDate(e.target.value); setSelectedUser(null)
+                // }}
                 className="mt-3 w-full text-xs border border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-300"
               />
             )}
@@ -344,6 +361,19 @@ export default function TrackingPage() {
 
         {/* ── Map ── */}
         <div className="flex-1 relative">
+
+          {loading && mapReady && (
+            <div className="absolute inset-0 z-[1000] bg-white/60 backdrop-blur-sm flex items-center justify-center">
+              <div className="bg-white rounded-2xl shadow-lg px-6 py-4 flex items-center gap-3">
+                <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                <div>
+                  <p className="text-sm font-bold text-slate-700">Memuat data...</p>
+                  <p className="text-xs text-slate-400">{date}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {!mapReady ? (
             <div className="absolute inset-0 flex items-center justify-center bg-slate-100">
               <div className="text-center">
@@ -370,12 +400,8 @@ export default function TrackingPage() {
               />
 
               <MapController
-                center={
-                  selectedLoc
-                    ? [selectedLoc.lat, selectedLoc.lng]
-                    : center
-                }
-                zoom={selectedUser !== null ? 15 : 13}
+                selectedUser={selectedUser}
+                selectedLoc={selectedLoc}
               />
               {locations.map(loc => (
                 <SalesMarker
