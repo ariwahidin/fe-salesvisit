@@ -7,14 +7,16 @@ import {
   Radio, ChevronRight, Loader2, Signal
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useMap } from 'react-leaflet'
 
 // ─── Leaflet dynamic import (no SSR) ─────────────────────────────────────────
 const MapContainer = dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false })
-const TileLayer = dynamic(() => import('react-leaflet').then(m => m.TileLayer), { ssr: false })
-const Marker = dynamic(() => import('react-leaflet').then(m => m.Marker), { ssr: false })
-const Popup = dynamic(() => import('react-leaflet').then(m => m.Popup), { ssr: false })
-const Polyline = dynamic(() => import('react-leaflet').then(m => m.Polyline), { ssr: false })
+const TileLayer    = dynamic(() => import('react-leaflet').then(m => m.TileLayer),    { ssr: false })
+const Marker       = dynamic(() => import('react-leaflet').then(m => m.Marker),       { ssr: false })
+const Popup        = dynamic(() => import('react-leaflet').then(m => m.Popup),        { ssr: false })
+const Polyline     = dynamic(() => import('react-leaflet').then(m => m.Polyline),     { ssr: false })
+
+// MapController di-dynamic juga agar useMap hanya jalan di client
+const MapController = dynamic(() => Promise.resolve(MapControllerInner), { ssr: false })
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface LiveLocation {
@@ -26,22 +28,25 @@ interface LiveLocation {
   created_at: string
 }
 interface TrailPoint {
-  id: number
   lat: number
   lng: number
-  accuracy: number
   created_at: string
 }
 interface TrailResponse {
   user_id: string
   date: string
   total: number
+  total_raw: number
   trail: TrailPoint[]
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || ''
-function apiToken() { return typeof window !== 'undefined' ? localStorage.getItem('token') : null }
+
+function apiToken() {
+  return typeof window !== 'undefined' ? localStorage.getItem('token') : null
+}
+
 async function apiFetch(path: string) {
   const t = apiToken()
   const res = await fetch(`${API}${path}`, {
@@ -57,19 +62,22 @@ async function apiFetch(path: string) {
 
 function fmt(iso?: string) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('id-ID', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  })
+  const d = new Date(iso)
+  // zero value dari Go: 0001-01-01
+  if (d.getFullYear() <= 1) return '—'
+  return d.toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
+
 function fmtDateStr(date: Date) {
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
 }
+
 function secondsAgo(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (diff < 60) return `${diff}d lalu`
+  if (diff < 60)   return `${diff}d lalu`
   if (diff < 3600) return `${Math.floor(diff / 60)}m lalu`
   return `${Math.floor(diff / 3600)}j lalu`
 }
@@ -111,7 +119,7 @@ function SalesMarker({ loc, isSelected, onClick }: {
   onClick: () => void
 }) {
   const color = salesColor(loc.user_id)
-  const icon = useLeafletIcon(color, loc.user_name)
+  const icon  = useLeafletIcon(color, loc.user_name)
   if (!icon) return null
   return (
     <Marker position={[loc.lat, loc.lng]} icon={icon} eventHandlers={{ click: onClick }}>
@@ -124,39 +132,46 @@ function SalesMarker({ loc, isSelected, onClick }: {
   )
 }
 
-function MapController({ selectedUser, selectedLoc }: {
+// ─── Map Controller (client-only, pakai useMap) ───────────────────────────────
+function MapControllerInner({ selectedUser, selectedLoc }: {
   selectedUser: number | null
   selectedLoc: LiveLocation | undefined
 }) {
-  const map = useMap()
+  // useMap di-import lazily agar tidak crash SSR
+  const { useMap } = require('react-leaflet')
+  const map         = useMap()
   const prevSelected = useRef<number | null>(null)
 
   useEffect(() => {
-    // flyTo HANYA kalau selectedUser berubah, bukan saat data refresh
+    // flyTo HANYA saat selectedUser berubah, bukan saat data refresh
     if (selectedUser !== null && selectedLoc && prevSelected.current !== selectedUser) {
       map.flyTo([selectedLoc.lat, selectedLoc.lng], 15, { duration: 1 })
     }
     prevSelected.current = selectedUser
-  }, [selectedUser]) // ← dependency hanya selectedUser, bukan selectedLoc
+  }, [selectedUser]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return null
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function TrackingPage() {
-  const [locations, setLocations] = useState<LiveLocation[]>([])
+  const [locations,    setLocations]    = useState<LiveLocation[]>([])
   const [selectedUser, setSelectedUser] = useState<number | null>(null)
-  const [trail, setTrail] = useState<TrailPoint[]>([])
+  const [trail,        setTrail]        = useState<TrailPoint[]>([])
   const [trailLoading, setTrailLoading] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [refreshLabel, setRefreshLabel] = useState('')   // ← client-only, cegah hydration error
-  const [date, setDate] = useState('')                   // ← init kosong, diisi di useEffect
-  const [mapReady, setMapReady] = useState(false)
-  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const [loading,      setLoading]      = useState(true)
+  const [refreshLabel, setRefreshLabel] = useState('')
+  const [date,         setDate]         = useState('')   // init kosong, diisi di client
+  const [mapReady,     setMapReady]     = useState(false)
+
+  const intervalRef    = useRef<NodeJS.Timeout | null>(null)
+  const latestDateRef  = useRef('')   // untuk stale-check race condition
 
   // Set date hanya di client (hindari server/client mismatch)
   useEffect(() => {
-    setDate(fmtDateStr(new Date()))
+    const today = fmtDateStr(new Date())
+    setDate(today)
+    latestDateRef.current = today
   }, [])
 
   // Fix Leaflet default icon
@@ -165,43 +180,61 @@ export default function TrackingPage() {
       delete (L.Icon.Default.prototype as any)._getIconUrl
       L.Icon.Default.mergeOptions({
         iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-        iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+        iconUrl:       'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+        shadowUrl:     'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
       })
       setMapReady(true)
     })
   }, [])
 
-  const loadLocations = useCallback(async () => {
-    if (!date) return
+  // ── Load live locations ──
+  const loadLocations = useCallback(async (targetDate: string) => {
+    if (!targetDate) return
     try {
-      const res = await apiFetch(`/api/location/live?date=${date}`)
+      const res = await apiFetch(`/api/location/live?date=${targetDate}`)
+      // Buang hasil kalau sudah stale (user ganti tanggal lagi)
+      if (latestDateRef.current !== targetDate) return
       setLocations(res.data ?? [])
-      const now = new Date()
-      setRefreshLabel(fmt(now.toISOString()))
+      setRefreshLabel(fmt(new Date().toISOString()))
     } catch {
+      if (latestDateRef.current !== targetDate) return
       setLocations([])
     } finally {
-      setLoading(false)
+      if (latestDateRef.current === targetDate) setLoading(false)
     }
-  }, [date])
+  }, [])
 
   useEffect(() => {
     if (!date) return
-    loadLocations()
-    intervalRef.current = setInterval(loadLocations, 10_000)
+    setLoading(true)
+    loadLocations(date)
+    intervalRef.current = setInterval(() => loadLocations(date), 10_000)
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [loadLocations, date])
+  }, [date, loadLocations])
 
-  // Load trail
+  // ── Load trail — jalan saat selectedUser ATAU date berubah ──
   useEffect(() => {
     if (selectedUser === null || !date) { setTrail([]); return }
+    const targetDate = date
+    const targetUser = selectedUser
     setTrailLoading(true)
-    apiFetch(`/api/location/trail/${selectedUser}?date=${date}`)
-      .then((res: TrailResponse) => setTrail(res.trail ?? []))
+    apiFetch(`/api/location/trail/${targetUser}?date=${targetDate}`)
+      .then((res: TrailResponse) => {
+        // Buang kalau sudah stale
+        if (latestDateRef.current !== targetDate || selectedUser !== targetUser) return
+        setTrail(res.trail ?? [])
+      })
       .catch(() => setTrail([]))
       .finally(() => setTrailLoading(false))
-  }, [selectedUser, date])
+  }, [selectedUser, date]) // ← kedua dependency — trail reload saat tanggal berubah juga
+
+  // ── Handler ganti tanggal ──
+  function handleDateChange(newDate: string) {
+    latestDateRef.current = newDate
+    setDate(newDate)
+    setLoading(true)
+    // selectedUser TIDAK di-reset — rute sales yang sama langsung reload untuk tanggal baru
+  }
 
   const selectedLoc = locations.find(l => l.user_id === selectedUser)
   const center: [number, number] = selectedLoc
@@ -225,7 +258,7 @@ export default function TrackingPage() {
                 <p className="text-xs text-slate-400 mt-0.5">Posisi sales hari ini</p>
               </div>
               <button
-                onClick={loadLocations}
+                onClick={() => loadLocations(date)}
                 className={cn('p-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 transition', loading && 'opacity-50 pointer-events-none')}
               >
                 <RefreshCw className={cn('w-3.5 h-3.5 text-slate-500', loading && 'animate-spin')} />
@@ -237,19 +270,12 @@ export default function TrackingPage() {
               <input
                 type="date"
                 value={date}
-                onChange={e => {
-                  setDate(e.target.value)
-                  setSelectedUser(null)
-                  setLoading(true)  // ← tambah ini
-                }}
-                // onChange={e => {
-                //   setDate(e.target.value); setSelectedUser(null)
-                // }}
+                onChange={e => handleDateChange(e.target.value)}
                 className="mt-3 w-full text-xs border border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-300"
               />
             )}
 
-            {/* Last refresh — client only */}
+            {/* Last refresh */}
             <div className="flex items-center gap-1.5 mt-2">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
               <span className="text-[11px] text-slate-400">
@@ -307,7 +333,7 @@ export default function TrackingPage() {
                 </button>
 
                 {locations.map(loc => {
-                  const color = salesColor(loc.user_id)
+                  const color      = salesColor(loc.user_id)
                   const isSelected = selectedUser === loc.user_id
                   return (
                     <button
@@ -355,6 +381,9 @@ export default function TrackingPage() {
                   {trail.length} titik · mulai {fmt(trail[0]?.created_at)} · terakhir {fmt(trail[trail.length - 1]?.created_at)}
                 </p>
               )}
+              {!trailLoading && trail.length === 0 && (
+                <p className="text-[11px] text-slate-400 mt-1">Tidak ada rute di tanggal ini</p>
+              )}
             </div>
           )}
         </div>
@@ -362,6 +391,7 @@ export default function TrackingPage() {
         {/* ── Map ── */}
         <div className="flex-1 relative">
 
+          {/* Loading overlay saat ganti tanggal */}
           {loading && mapReady && (
             <div className="absolute inset-0 z-[1000] bg-white/60 backdrop-blur-sm flex items-center justify-center">
               <div className="bg-white rounded-2xl shadow-lg px-6 py-4 flex items-center gap-3">
@@ -387,11 +417,6 @@ export default function TrackingPage() {
               zoom={13}
               style={{ width: '100%', height: '100%' }}
             >
-              {/* <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              /> */}
-
               <TileLayer
                 attribution='&copy; Google Maps'
                 url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
@@ -403,6 +428,7 @@ export default function TrackingPage() {
                 selectedUser={selectedUser}
                 selectedLoc={selectedLoc}
               />
+
               {locations.map(loc => (
                 <SalesMarker
                   key={loc.user_id}
@@ -411,6 +437,7 @@ export default function TrackingPage() {
                   onClick={() => setSelectedUser(selectedUser === loc.user_id ? null : loc.user_id)}
                 />
               ))}
+
               {selectedUser !== null && trail.length > 1 && (
                 <Polyline
                   positions={trail.map(t => [t.lat, t.lng] as [number, number])}
@@ -423,7 +450,7 @@ export default function TrackingPage() {
             </MapContainer>
           )}
 
-          {/* Overlay */}
+          {/* Overlay info */}
           {mapReady && (
             <div className="absolute top-4 right-4 z-[1000] bg-white rounded-2xl shadow-lg border border-slate-200 px-4 py-3">
               <div className="flex items-center gap-2">
