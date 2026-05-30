@@ -7,13 +7,14 @@ import {
   Radio, ChevronRight, Loader2, Signal
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { DwellPoint, DwellResponse } from '@/types'
 
 // ─── Leaflet dynamic import (no SSR) ─────────────────────────────────────────
 const MapContainer = dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false })
-const TileLayer    = dynamic(() => import('react-leaflet').then(m => m.TileLayer),    { ssr: false })
-const Marker       = dynamic(() => import('react-leaflet').then(m => m.Marker),       { ssr: false })
-const Popup        = dynamic(() => import('react-leaflet').then(m => m.Popup),        { ssr: false })
-const Polyline     = dynamic(() => import('react-leaflet').then(m => m.Polyline),     { ssr: false })
+const TileLayer = dynamic(() => import('react-leaflet').then(m => m.TileLayer), { ssr: false })
+const Marker = dynamic(() => import('react-leaflet').then(m => m.Marker), { ssr: false })
+const Popup = dynamic(() => import('react-leaflet').then(m => m.Popup), { ssr: false })
+const Polyline = dynamic(() => import('react-leaflet').then(m => m.Polyline), { ssr: false })
 
 // MapController di-dynamic juga agar useMap hanya jalan di client
 const MapController = dynamic(() => Promise.resolve(MapControllerInner), { ssr: false })
@@ -77,7 +78,7 @@ function fmtDateStr(date: Date) {
 
 function secondsAgo(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (diff < 60)   return `${diff}d lalu`
+  if (diff < 60) return `${diff}d lalu`
   if (diff < 3600) return `${Math.floor(diff / 60)}m lalu`
   return `${Math.floor(diff / 3600)}j lalu`
 }
@@ -119,7 +120,7 @@ function SalesMarker({ loc, isSelected, onClick }: {
   onClick: () => void
 }) {
   const color = salesColor(loc.user_id)
-  const icon  = useLeafletIcon(color, loc.user_name)
+  const icon = useLeafletIcon(color, loc.user_name)
   if (!icon) return null
   return (
     <Marker position={[loc.lat, loc.lng]} icon={icon} eventHandlers={{ click: onClick }}>
@@ -133,17 +134,42 @@ function SalesMarker({ loc, isSelected, onClick }: {
 }
 
 // ─── Map Controller (client-only, pakai useMap) ───────────────────────────────
-function MapControllerInner({ selectedUser, selectedLoc }: {
+// function MapControllerInner({ selectedUser, selectedLoc }: {
+//   selectedUser: number | null
+//   selectedLoc: LiveLocation | undefined
+// }) {
+//   // useMap di-import lazily agar tidak crash SSR
+//   const { useMap } = require('react-leaflet')
+//   const map = useMap()
+//   const prevSelected = useRef<number | null>(null)
+
+//   useEffect(() => {
+//     // flyTo HANYA saat selectedUser berubah, bukan saat data refresh
+//     if (selectedUser !== null && selectedLoc && prevSelected.current !== selectedUser) {
+//       map.flyTo([selectedLoc.lat, selectedLoc.lng], 15, { duration: 1 })
+//     }
+//     prevSelected.current = selectedUser
+//   }, [selectedUser]) // eslint-disable-line react-hooks/exhaustive-deps
+
+//   return null
+// }
+
+function MapControllerInner({ selectedUser, selectedLoc, onReady }: {
   selectedUser: number | null
   selectedLoc: LiveLocation | undefined
+  onReady?: (flyTo: (lat: number, lng: number) => void) => void
 }) {
-  // useMap di-import lazily agar tidak crash SSR
   const { useMap } = require('react-leaflet')
-  const map         = useMap()
+  const map = useMap()
   const prevSelected = useRef<number | null>(null)
 
   useEffect(() => {
-    // flyTo HANYA saat selectedUser berubah, bukan saat data refresh
+    if (onReady) {
+      onReady((lat, lng) => map.flyTo([lat, lng], 17, { duration: 1 }))
+    }
+  }, [map]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (selectedUser !== null && selectedLoc && prevSelected.current !== selectedUser) {
       map.flyTo([selectedLoc.lat, selectedLoc.lng], 15, { duration: 1 })
     }
@@ -155,17 +181,23 @@ function MapControllerInner({ selectedUser, selectedLoc }: {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function TrackingPage() {
-  const [locations,    setLocations]    = useState<LiveLocation[]>([])
+  const [locations, setLocations] = useState<LiveLocation[]>([])
   const [selectedUser, setSelectedUser] = useState<number | null>(null)
-  const [trail,        setTrail]        = useState<TrailPoint[]>([])
+  const [trail, setTrail] = useState<TrailPoint[]>([])
   const [trailLoading, setTrailLoading] = useState(false)
-  const [loading,      setLoading]      = useState(true)
+  const [loading, setLoading] = useState(true)
   const [refreshLabel, setRefreshLabel] = useState('')
-  const [date,         setDate]         = useState('')   // init kosong, diisi di client
-  const [mapReady,     setMapReady]     = useState(false)
+  const [date, setDate] = useState('')   // init kosong, diisi di client
+  const [mapReady, setMapReady] = useState(false)
 
-  const intervalRef    = useRef<NodeJS.Timeout | null>(null)
-  const latestDateRef  = useRef('')   // untuk stale-check race condition
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const latestDateRef = useRef('')   // untuk stale-check race condition
+
+  const [activeTab, setActiveTab] = useState<'route' | 'dwell'>('route')
+  const [dwellPoints, setDwellPoints] = useState<DwellPoint[]>([])
+  const [dwellLoading, setDwellLoading] = useState(false)
+  const [dwellSummary, setDwellSummary] = useState({ total_stops: 0, total_moving_minutes: 0, total_idle_minutes: 0 })
+  const flyToRef = useRef<((lat: number, lng: number) => void) | null>(null)
 
   // Set date hanya di client (hindari server/client mismatch)
   useEffect(() => {
@@ -180,8 +212,8 @@ export default function TrackingPage() {
       delete (L.Icon.Default.prototype as any)._getIconUrl
       L.Icon.Default.mergeOptions({
         iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-        iconUrl:       'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-        shadowUrl:     'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+        iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
       })
       setMapReady(true)
     })
@@ -227,6 +259,25 @@ export default function TrackingPage() {
       .catch(() => setTrail([]))
       .finally(() => setTrailLoading(false))
   }, [selectedUser, date]) // ← kedua dependency — trail reload saat tanggal berubah juga
+
+  useEffect(() => {
+    if (selectedUser === null || !date) { setDwellPoints([]); return }
+    const targetDate = date
+    const targetUser = selectedUser
+    setDwellLoading(true)
+    apiFetch(`/api/location/dwell/${targetUser}?date=${targetDate}`)
+      .then((res: DwellResponse) => {
+        if (latestDateRef.current !== targetDate || selectedUser !== targetUser) return
+        setDwellPoints(res.dwell_points ?? [])
+        setDwellSummary({
+          total_stops: res.total_stops,
+          total_moving_minutes: res.total_moving_minutes,
+          total_idle_minutes: res.total_idle_minutes,
+        })
+      })
+      .catch(() => setDwellPoints([]))
+      .finally(() => setDwellLoading(false))
+  }, [selectedUser, date])
 
   // ── Handler ganti tanggal ──
   function handleDateChange(newDate: string) {
@@ -333,7 +384,7 @@ export default function TrackingPage() {
                 </button>
 
                 {locations.map(loc => {
-                  const color      = salesColor(loc.user_id)
+                  const color = salesColor(loc.user_id)
                   const isSelected = selectedUser === loc.user_id
                   return (
                     <button
@@ -369,7 +420,7 @@ export default function TrackingPage() {
           </div>
 
           {/* Trail info */}
-          {selectedUser !== null && (
+          {/* {selectedUser !== null && (
             <div className="px-4 py-3 border-t border-slate-100 bg-slate-50">
               <div className="flex items-center gap-2">
                 <Navigation className="w-3.5 h-3.5 text-blue-500" />
@@ -384,6 +435,116 @@ export default function TrackingPage() {
               {!trailLoading && trail.length === 0 && (
                 <p className="text-[11px] text-slate-400 mt-1">Tidak ada rute di tanggal ini</p>
               )}
+            </div>
+          )} */}
+
+          {selectedUser !== null && (
+            <div className="border-t border-slate-100 bg-slate-50">
+              {/* Tab header */}
+              <div className="flex border-b border-slate-200">
+                <button
+                  onClick={() => setActiveTab('route')}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold transition',
+                    activeTab === 'route'
+                      ? 'text-blue-600 border-b-2 border-blue-500 bg-white'
+                      : 'text-slate-400 hover:text-slate-600'
+                  )}
+                >
+                  <Navigation className="w-3 h-3" />
+                  Rute
+                </button>
+                <button
+                  onClick={() => setActiveTab('dwell')}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold transition',
+                    activeTab === 'dwell'
+                      ? 'text-blue-600 border-b-2 border-blue-500 bg-white'
+                      : 'text-slate-400 hover:text-slate-600'
+                  )}
+                >
+                  <Clock className="w-3 h-3" />
+                  Dwell Points
+                  {dwellPoints.length > 0 && (
+                    <span className="bg-blue-100 text-blue-600 text-[10px] font-black px-1.5 py-0.5 rounded-full">
+                      {dwellPoints.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Tab content */}
+              <div className="px-4 py-3">
+                {/* Tab Rute */}
+                {activeTab === 'route' && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Navigation className="w-3.5 h-3.5 text-blue-500" />
+                      <span className="text-xs font-bold text-slate-700">Rute Hari Ini</span>
+                      {trailLoading && <Loader2 className="w-3 h-3 animate-spin text-slate-400 ml-auto" />}
+                    </div>
+                    {!trailLoading && trail.length > 0 && (
+                      <p className="text-[11px] text-slate-400">
+                        {trail.length} titik · mulai {fmt(trail[0]?.created_at)} · terakhir {fmt(trail[trail.length - 1]?.created_at)}
+                      </p>
+                    )}
+                    {!trailLoading && trail.length === 0 && (
+                      <p className="text-[11px] text-slate-400">Tidak ada rute di tanggal ini</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Tab Dwell Points */}
+                {activeTab === 'dwell' && (
+                  <div>
+                    {dwellLoading ? (
+                      <div className="flex items-center gap-2 py-1">
+                        <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
+                        <span className="text-[11px] text-slate-400">Menganalisis...</span>
+                      </div>
+                    ) : dwellPoints.length === 0 ? (
+                      <p className="text-[11px] text-slate-400">Tidak ada titik berhenti</p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {/* Summary */}
+                        <div className="grid grid-cols-3 gap-1 mb-2">
+                          <div className="bg-white rounded-lg px-2 py-1.5 text-center">
+                            <p className="text-sm font-black text-slate-800">{dwellSummary.total_stops}</p>
+                            <p className="text-[10px] text-slate-400">Stop</p>
+                          </div>
+                          <div className="bg-white rounded-lg px-2 py-1.5 text-center">
+                            <p className="text-sm font-black text-blue-600">{dwellSummary.total_moving_minutes}m</p>
+                            <p className="text-[10px] text-slate-400">Jalan</p>
+                          </div>
+                          <div className="bg-white rounded-lg px-2 py-1.5 text-center">
+                            <p className="text-sm font-black text-amber-500">{dwellSummary.total_idle_minutes}m</p>
+                            <p className="text-[10px] text-slate-400">Diam</p>
+                          </div>
+                        </div>
+
+                        {/* List dwell points */}
+                        {dwellPoints.map((d, i) => (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              if (flyToRef.current) flyToRef.current(d.lat, d.lng)
+                            }}
+                            className="w-full bg-white rounded-xl px-3 py-2 text-left hover:bg-blue-50 transition border border-slate-100 hover:border-blue-200"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-black text-slate-700">Stop {i + 1}</span>
+                              <span className="text-[11px] font-bold text-amber-500">{d.duration_minutes} menit</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {fmt(d.arrived_at)} → {fmt(d.left_at)}
+                            </p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -424,9 +585,15 @@ export default function TrackingPage() {
                 maxNativeZoom={21}
               />
 
+              {/* <MapController
+                selectedUser={selectedUser}
+                selectedLoc={selectedLoc}
+              /> */}
+
               <MapController
                 selectedUser={selectedUser}
                 selectedLoc={selectedLoc}
+                onReady={(fn) => { flyToRef.current = fn }}
               />
 
               {locations.map(loc => (

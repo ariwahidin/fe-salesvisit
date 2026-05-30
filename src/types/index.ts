@@ -105,3 +105,20 @@ export interface SalesPerf {
   total: number
   completed: number
 }
+
+export interface DwellPoint {
+  lat: number
+  lng: number
+  arrived_at: string
+  left_at: string
+  duration_minutes: number
+}
+
+export interface DwellResponse {
+  user_id: string
+  date: string
+  dwell_points: DwellPoint[]
+  total_stops: number
+  total_moving_minutes: number
+  total_idle_minutes: number
+}
