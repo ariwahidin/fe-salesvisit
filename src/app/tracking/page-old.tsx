@@ -4,17 +4,19 @@ import dynamic from 'next/dynamic'
 import AppLayout from '@/components/layout/AppLayout'
 import {
   RefreshCw, Users, Navigation, Clock,
-  Radio, ChevronRight, Loader2, Signal, MapPin
+  Radio, ChevronRight, Loader2, Signal
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { DwellPoint, DwellResponse } from '@/types'
 
 // ─── Leaflet dynamic import (no SSR) ─────────────────────────────────────────
 const MapContainer = dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false })
-const TileLayer    = dynamic(() => import('react-leaflet').then(m => m.TileLayer),    { ssr: false })
-const Marker       = dynamic(() => import('react-leaflet').then(m => m.Marker),       { ssr: false })
-const Popup        = dynamic(() => import('react-leaflet').then(m => m.Popup),        { ssr: false })
-const Polyline     = dynamic(() => import('react-leaflet').then(m => m.Polyline),     { ssr: false })
+const TileLayer = dynamic(() => import('react-leaflet').then(m => m.TileLayer), { ssr: false })
+const Marker = dynamic(() => import('react-leaflet').then(m => m.Marker), { ssr: false })
+const Popup = dynamic(() => import('react-leaflet').then(m => m.Popup), { ssr: false })
+const Polyline = dynamic(() => import('react-leaflet').then(m => m.Polyline), { ssr: false })
+
+// MapController di-dynamic juga agar useMap hanya jalan di client
 const MapController = dynamic(() => Promise.resolve(MapControllerInner), { ssr: false })
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -37,10 +39,6 @@ interface TrailResponse {
   total: number
   total_raw: number
   trail: TrailPoint[]
-}
-interface DwellPointWithAddress extends DwellPoint {
-  address?: string
-  addressLoading?: boolean
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,6 +64,7 @@ async function apiFetch(path: string) {
 function fmt(iso?: string) {
   if (!iso) return '—'
   const d = new Date(iso)
+  // zero value dari Go: 0001-01-01
   if (d.getFullYear() <= 1) return '—'
   return d.toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
@@ -77,10 +76,9 @@ function fmtDateStr(date: Date) {
   return `${y}-${m}-${d}`
 }
 
-// ── Bug fix: 'd' → 's' untuk detik ──
 function secondsAgo(iso: string) {
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (diff < 60)   return `${diff}s lalu`
+  if (diff < 60) return `${diff}d lalu`
   if (diff < 3600) return `${Math.floor(diff / 60)}m lalu`
   return `${Math.floor(diff / 3600)}j lalu`
 }
@@ -93,28 +91,7 @@ function salesColor(userId: number) {
   return COLORS[userId % COLORS.length]
 }
 
-// ─── Nominatim reverse geocode ────────────────────────────────────────────────
-async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-      { headers: { 'Accept-Language': 'id', 'User-Agent': 'SalesVisit/1.0' } }
-    )
-    const data = await res.json()
-    // Ambil road + suburb + city, fallback ke display_name singkat
-    const a = data.address || {}
-    const parts = [
-      a.road || a.pedestrian || a.footway,
-      a.suburb || a.village || a.town,
-      a.city || a.county,
-    ].filter(Boolean)
-    return parts.length > 0 ? parts.join(', ') : (data.display_name?.split(',').slice(0, 3).join(',') || '—')
-  } catch {
-    return '—'
-  }
-}
-
-// ─── Custom marker icon — salesman ───────────────────────────────────────────
+// ─── Custom marker icon ───────────────────────────────────────────────────────
 function useLeafletIcon(color: string, label: string) {
   const [icon, setIcon] = useState<any>(null)
   useEffect(() => {
@@ -124,38 +101,26 @@ function useLeafletIcon(color: string, label: string) {
         <text x="18" y="23" text-anchor="middle" fill="white" font-size="11" font-weight="bold" font-family="sans-serif">${label.slice(0, 2).toUpperCase()}</text>
         <polygon points="12,30 24,30 18,44" fill="${color}"/>
       </svg>`
-      setIcon(L.divIcon({ html: svg, className: '', iconSize: [36, 44], iconAnchor: [18, 44], popupAnchor: [0, -44] }))
+      setIcon(L.divIcon({
+        html: svg,
+        className: '',
+        iconSize: [36, 44],
+        iconAnchor: [18, 44],
+        popupAnchor: [0, -44],
+      }))
     })
   }, [color, label])
   return icon
 }
 
-// ─── Custom marker icon — dwell point ────────────────────────────────────────
-function useDwellIcon(index: number, highlighted: boolean) {
-  const [icon, setIcon] = useState<any>(null)
-  useEffect(() => {
-    import('leaflet').then(L => {
-      const size   = highlighted ? 40 : 32
-      const r      = highlighted ? 14 : 11
-      const fs     = highlighted ? 11 : 9
-      const border = highlighted ? 3  : 2
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size + 8}" viewBox="0 0 ${size} ${size + 8}">
-        <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="${highlighted ? '#f59e0b' : '#fbbf24'}" stroke="white" stroke-width="${border}"/>
-        <text x="${size / 2}" y="${size / 2 + fs / 3}" text-anchor="middle" fill="white" font-size="${fs}" font-weight="bold" font-family="sans-serif">${index + 1}</text>
-        <polygon points="${size / 2 - 4},${size - 2} ${size / 2 + 4},${size - 2} ${size / 2},${size + 8}" fill="${highlighted ? '#f59e0b' : '#fbbf24'}"/>
-      </svg>`
-      setIcon(L.divIcon({ html: svg, className: '', iconSize: [size, size + 8], iconAnchor: [size / 2, size + 8], popupAnchor: [0, -(size + 8)] }))
-    })
-  }, [index, highlighted])
-  return icon
-}
-
 // ─── Sales Marker ─────────────────────────────────────────────────────────────
 function SalesMarker({ loc, isSelected, onClick }: {
-  loc: LiveLocation; isSelected: boolean; onClick: () => void
+  loc: LiveLocation
+  isSelected: boolean
+  onClick: () => void
 }) {
   const color = salesColor(loc.user_id)
-  const icon  = useLeafletIcon(color, loc.user_name)
+  const icon = useLeafletIcon(color, loc.user_name)
   if (!icon) return null
   return (
     <Marker position={[loc.lat, loc.lng]} icon={icon} eventHandlers={{ click: onClick }}>
@@ -168,54 +133,31 @@ function SalesMarker({ loc, isSelected, onClick }: {
   )
 }
 
-// ─── Dwell Marker ─────────────────────────────────────────────────────────────
-function DwellMarker({ point, index, highlighted, onOpen }: {
-  point: DwellPointWithAddress
-  index: number
-  highlighted: boolean
-  onOpen: () => void
-}) {
-  const icon = useDwellIcon(index, highlighted)
-  if (!icon) return null
-  return (
-    <Marker
-      position={[point.lat, point.lng]}
-      icon={icon}
-      eventHandlers={{ click: onOpen }}
-    >
-      <Popup>
-        <div style={{ minWidth: 180 }}>
-          <div style={{ fontWeight: 800, fontSize: 13, color: '#92400e', marginBottom: 4 }}>
-            Stop {index + 1}
-          </div>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 2 }}>
-            <span style={{ fontWeight: 600 }}>Koordinat:</span> {point.lat.toFixed(5)}, {point.lng.toFixed(5)}
-          </div>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 2 }}>
-            <span style={{ fontWeight: 600 }}>Tiba:</span> {fmt(point.arrived_at)}
-          </div>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 2 }}>
-            <span style={{ fontWeight: 600 }}>Pergi:</span> {fmt(point.left_at)}
-          </div>
-          <div style={{ fontSize: 11, color: '#d97706', fontWeight: 700, marginBottom: 4 }}>
-            ⏱ {point.duration_minutes} menit
-          </div>
-          {point.addressLoading ? (
-            <div style={{ fontSize: 10, color: '#94a3b8' }}>Memuat alamat...</div>
-          ) : point.address ? (
-            <div style={{ fontSize: 10, color: '#475569', lineHeight: 1.4 }}>📍 {point.address}</div>
-          ) : null}
-        </div>
-      </Popup>
-    </Marker>
-  )
-}
+// ─── Map Controller (client-only, pakai useMap) ───────────────────────────────
+// function MapControllerInner({ selectedUser, selectedLoc }: {
+//   selectedUser: number | null
+//   selectedLoc: LiveLocation | undefined
+// }) {
+//   // useMap di-import lazily agar tidak crash SSR
+//   const { useMap } = require('react-leaflet')
+//   const map = useMap()
+//   const prevSelected = useRef<number | null>(null)
 
-// ─── Map Controller ───────────────────────────────────────────────────────────
+//   useEffect(() => {
+//     // flyTo HANYA saat selectedUser berubah, bukan saat data refresh
+//     if (selectedUser !== null && selectedLoc && prevSelected.current !== selectedUser) {
+//       map.flyTo([selectedLoc.lat, selectedLoc.lng], 15, { duration: 1 })
+//     }
+//     prevSelected.current = selectedUser
+//   }, [selectedUser]) // eslint-disable-line react-hooks/exhaustive-deps
+
+//   return null
+// }
+
 function MapControllerInner({ selectedUser, selectedLoc, onReady }: {
   selectedUser: number | null
   selectedLoc: LiveLocation | undefined
-  onReady?: (flyTo: (lat: number, lng: number, zoom?: number) => void) => void
+  onReady?: (flyTo: (lat: number, lng: number) => void) => void
 }) {
   const { useMap } = require('react-leaflet')
   const map = useMap()
@@ -223,7 +165,7 @@ function MapControllerInner({ selectedUser, selectedLoc, onReady }: {
 
   useEffect(() => {
     if (onReady) {
-      onReady((lat, lng, zoom = 17) => map.flyTo([lat, lng], zoom, { duration: 1 }))
+      onReady((lat, lng) => map.flyTo([lat, lng], 17, { duration: 1 }))
     }
   }, [map]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -239,27 +181,25 @@ function MapControllerInner({ selectedUser, selectedLoc, onReady }: {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function TrackingPage() {
-  const [locations,    setLocations]    = useState<LiveLocation[]>([])
+  const [locations, setLocations] = useState<LiveLocation[]>([])
   const [selectedUser, setSelectedUser] = useState<number | null>(null)
-  const [trail,        setTrail]        = useState<TrailPoint[]>([])
+  const [trail, setTrail] = useState<TrailPoint[]>([])
   const [trailLoading, setTrailLoading] = useState(false)
-  const [loading,      setLoading]      = useState(true)
+  const [loading, setLoading] = useState(true)
   const [refreshLabel, setRefreshLabel] = useState('')
-  const [date,         setDate]         = useState('')
-  const [mapReady,     setMapReady]     = useState(false)
+  const [date, setDate] = useState('')   // init kosong, diisi di client
+  const [mapReady, setMapReady] = useState(false)
 
-  const [activeTab,       setActiveTab]       = useState<'route' | 'dwell'>('route')
-  const [dwellPoints,     setDwellPoints]     = useState<DwellPointWithAddress[]>([])
-  const [dwellLoading,    setDwellLoading]    = useState(false)
-  const [dwellSummary,    setDwellSummary]    = useState({ total_stops: 0, total_moving_minutes: 0, total_idle_minutes: 0 })
-  const [highlightedStop, setHighlightedStop] = useState<number | null>(null)
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const latestDateRef = useRef('')   // untuk stale-check race condition
 
-  const flyToRef       = useRef<((lat: number, lng: number, zoom?: number) => void) | null>(null)
-  const intervalRef    = useRef<NodeJS.Timeout | null>(null)
-  const latestDateRef  = useRef('')
-  const geocodeRunning = useRef(false)
+  const [activeTab, setActiveTab] = useState<'route' | 'dwell'>('route')
+  const [dwellPoints, setDwellPoints] = useState<DwellPoint[]>([])
+  const [dwellLoading, setDwellLoading] = useState(false)
+  const [dwellSummary, setDwellSummary] = useState({ total_stops: 0, total_moving_minutes: 0, total_idle_minutes: 0 })
+  const flyToRef = useRef<((lat: number, lng: number) => void) | null>(null)
 
-  // Set date di client
+  // Set date hanya di client (hindari server/client mismatch)
   useEffect(() => {
     const today = fmtDateStr(new Date())
     setDate(today)
@@ -272,8 +212,8 @@ export default function TrackingPage() {
       delete (L.Icon.Default.prototype as any)._getIconUrl
       L.Icon.Default.mergeOptions({
         iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-        iconUrl:       'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-        shadowUrl:     'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+        iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
       })
       setMapReady(true)
     })
@@ -284,6 +224,7 @@ export default function TrackingPage() {
     if (!targetDate) return
     try {
       const res = await apiFetch(`/api/location/live?date=${targetDate}`)
+      // Buang hasil kalau sudah stale (user ganti tanggal lagi)
       if (latestDateRef.current !== targetDate) return
       setLocations(res.data ?? [])
       setRefreshLabel(fmt(new Date().toISOString()))
@@ -303,7 +244,7 @@ export default function TrackingPage() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [date, loadLocations])
 
-  // ── Load trail ──
+  // ── Load trail — jalan saat selectedUser ATAU date berubah ──
   useEffect(() => {
     if (selectedUser === null || !date) { setTrail([]); return }
     const targetDate = date
@@ -311,76 +252,39 @@ export default function TrackingPage() {
     setTrailLoading(true)
     apiFetch(`/api/location/trail/${targetUser}?date=${targetDate}`)
       .then((res: TrailResponse) => {
+        // Buang kalau sudah stale
         if (latestDateRef.current !== targetDate || selectedUser !== targetUser) return
         setTrail(res.trail ?? [])
       })
       .catch(() => setTrail([]))
       .finally(() => setTrailLoading(false))
-  }, [selectedUser, date])
+  }, [selectedUser, date]) // ← kedua dependency — trail reload saat tanggal berubah juga
 
-  // ── Load dwell points ──
   useEffect(() => {
     if (selectedUser === null || !date) { setDwellPoints([]); return }
     const targetDate = date
     const targetUser = selectedUser
     setDwellLoading(true)
-    setHighlightedStop(null)
     apiFetch(`/api/location/dwell/${targetUser}?date=${targetDate}`)
       .then((res: DwellResponse) => {
         if (latestDateRef.current !== targetDate || selectedUser !== targetUser) return
-        const pts: DwellPointWithAddress[] = (res.dwell_points ?? []).map(p => ({
-          ...p,
-          address: undefined,
-          addressLoading: true,
-        }))
-        setDwellPoints(pts)
+        setDwellPoints(res.dwell_points ?? [])
         setDwellSummary({
-          total_stops:           res.total_stops,
-          total_moving_minutes:  res.total_moving_minutes,
-          total_idle_minutes:    res.total_idle_minutes,
+          total_stops: res.total_stops,
+          total_moving_minutes: res.total_moving_minutes,
+          total_idle_minutes: res.total_idle_minutes,
         })
-        // Fetch alamat satu-satu dengan delay 1.2 detik (Nominatim rate limit)
-        fetchAddresses(pts, targetDate, targetUser)
       })
       .catch(() => setDwellPoints([]))
       .finally(() => setDwellLoading(false))
   }, [selectedUser, date])
-
-  // ── Fetch Nominatim addresses dengan rate limiting ──
-  async function fetchAddresses(pts: DwellPointWithAddress[], targetDate: string, targetUser: number) {
-    if (geocodeRunning.current) return
-    geocodeRunning.current = true
-    for (let i = 0; i < pts.length; i++) {
-      // Abort kalau user sudah ganti salesman/tanggal
-      if (latestDateRef.current !== targetDate || selectedUser !== targetUser) break
-      const address = await reverseGeocode(pts[i].lat, pts[i].lng)
-      setDwellPoints(prev => {
-        const updated = [...prev]
-        if (updated[i]) {
-          updated[i] = { ...updated[i], address, addressLoading: false }
-        }
-        return updated
-      })
-      // Delay 1.2 detik antar request — Nominatim max 1 req/detik
-      if (i < pts.length - 1) {
-        await new Promise(r => setTimeout(r, 1200))
-      }
-    }
-    geocodeRunning.current = false
-  }
 
   // ── Handler ganti tanggal ──
   function handleDateChange(newDate: string) {
     latestDateRef.current = newDate
     setDate(newDate)
     setLoading(true)
-    setHighlightedStop(null)
-  }
-
-  // ── Klik stop di sidebar ──
-  function handleStopClick(index: number, point: DwellPointWithAddress) {
-    setHighlightedStop(index)
-    if (flyToRef.current) flyToRef.current(point.lat, point.lng, 17)
+    // selectedUser TIDAK di-reset — rute sales yang sama langsung reload untuk tanggal baru
   }
 
   const selectedLoc = locations.find(l => l.user_id === selectedUser)
@@ -412,6 +316,7 @@ export default function TrackingPage() {
               </button>
             </div>
 
+            {/* Date picker */}
             {date && (
               <input
                 type="date"
@@ -421,6 +326,7 @@ export default function TrackingPage() {
               />
             )}
 
+            {/* Last refresh */}
             <div className="flex items-center gap-1.5 mt-2">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
               <span className="text-[11px] text-slate-400">
@@ -459,6 +365,7 @@ export default function TrackingPage() {
               </div>
             ) : (
               <div className="p-2 space-y-1">
+                {/* Semua */}
                 <button
                   onClick={() => setSelectedUser(null)}
                   className={cn(
@@ -477,7 +384,7 @@ export default function TrackingPage() {
                 </button>
 
                 {locations.map(loc => {
-                  const color      = salesColor(loc.user_id)
+                  const color = salesColor(loc.user_id)
                   const isSelected = selectedUser === loc.user_id
                   return (
                     <button
@@ -512,7 +419,25 @@ export default function TrackingPage() {
             )}
           </div>
 
-          {/* Tab panel bawah */}
+          {/* Trail info */}
+          {/* {selectedUser !== null && (
+            <div className="px-4 py-3 border-t border-slate-100 bg-slate-50">
+              <div className="flex items-center gap-2">
+                <Navigation className="w-3.5 h-3.5 text-blue-500" />
+                <span className="text-xs font-bold text-slate-700">Rute Hari Ini</span>
+                {trailLoading && <Loader2 className="w-3 h-3 animate-spin text-slate-400 ml-auto" />}
+              </div>
+              {!trailLoading && trail.length > 0 && (
+                <p className="text-[11px] text-slate-400 mt-1">
+                  {trail.length} titik · mulai {fmt(trail[0]?.created_at)} · terakhir {fmt(trail[trail.length - 1]?.created_at)}
+                </p>
+              )}
+              {!trailLoading && trail.length === 0 && (
+                <p className="text-[11px] text-slate-400 mt-1">Tidak ada rute di tanggal ini</p>
+              )}
+            </div>
+          )} */}
+
           {selectedUser !== null && (
             <div className="border-t border-slate-100 bg-slate-50">
               {/* Tab header */}
@@ -549,8 +474,7 @@ export default function TrackingPage() {
               </div>
 
               {/* Tab content */}
-              <div className={cn(activeTab === 'dwell' && dwellPoints.length > 0 ? 'px-3 py-3' : 'px-4 py-3')}>
-
+              <div className="px-4 py-3">
                 {/* Tab Rute */}
                 {activeTab === 'route' && (
                   <div>
@@ -581,9 +505,9 @@ export default function TrackingPage() {
                     ) : dwellPoints.length === 0 ? (
                       <p className="text-[11px] text-slate-400">Tidak ada titik berhenti</p>
                     ) : (
-                      <div>
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
                         {/* Summary */}
-                        <div className="grid grid-cols-3 gap-1 mb-3">
+                        <div className="grid grid-cols-3 gap-1 mb-2">
                           <div className="bg-white rounded-lg px-2 py-1.5 text-center">
                             <p className="text-sm font-black text-slate-800">{dwellSummary.total_stops}</p>
                             <p className="text-[10px] text-slate-400">Stop</p>
@@ -598,72 +522,24 @@ export default function TrackingPage() {
                           </div>
                         </div>
 
-                        {/* List stop */}
-                        <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
-                          {dwellPoints.map((d, i) => {
-                            const isHighlighted = highlightedStop === i
-                            return (
-                              <button
-                                key={i}
-                                onClick={() => handleStopClick(i, d)}
-                                className={cn(
-                                  'w-full rounded-xl px-3 py-2.5 text-left transition border',
-                                  isHighlighted
-                                    ? 'bg-amber-50 border-amber-300 shadow-sm'
-                                    : 'bg-white border-slate-100 hover:bg-amber-50 hover:border-amber-200'
-                                )}
-                              >
-                                {/* Header stop */}
-                                <div className="flex items-center justify-between mb-1.5">
-                                  <div className="flex items-center gap-1.5">
-                                    <div className={cn(
-                                      'w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-black',
-                                      isHighlighted ? 'bg-amber-500' : 'bg-amber-400'
-                                    )}>
-                                      {i + 1}
-                                    </div>
-                                    <span className="text-[11px] font-black text-slate-700">Stop {i + 1}</span>
-                                  </div>
-                                  <span className={cn(
-                                    'text-[11px] font-bold',
-                                    isHighlighted ? 'text-amber-600' : 'text-amber-500'
-                                  )}>
-                                    {d.duration_minutes} menit
-                                  </span>
-                                </div>
-
-                                {/* Koordinat */}
-                                <div className="flex items-center gap-1 mb-1">
-                                  <MapPin className="w-2.5 h-2.5 text-slate-400 flex-shrink-0" />
-                                  <span className="text-[10px] text-slate-400 font-mono">
-                                    {d.lat.toFixed(5)}, {d.lng.toFixed(5)}
-                                  </span>
-                                </div>
-
-                                {/* Waktu */}
-                                <div className="flex items-center gap-1 mb-1">
-                                  <Clock className="w-2.5 h-2.5 text-slate-400 flex-shrink-0" />
-                                  <span className="text-[10px] text-slate-500">
-                                    {fmt(d.arrived_at)} → {fmt(d.left_at)}
-                                  </span>
-                                </div>
-
-                                {/* Alamat */}
-                                {d.addressLoading ? (
-                                  <div className="flex items-center gap-1 mt-1">
-                                    <Loader2 className="w-2.5 h-2.5 animate-spin text-slate-300 flex-shrink-0" />
-                                    <span className="text-[10px] text-slate-300">Memuat alamat...</span>
-                                  </div>
-                                ) : d.address ? (
-                                  <div className="flex items-start gap-1 mt-1">
-                                    <span className="text-[10px] text-slate-400 flex-shrink-0 mt-0.5">📍</span>
-                                    <span className="text-[10px] text-slate-500 leading-tight">{d.address}</span>
-                                  </div>
-                                ) : null}
-                              </button>
-                            )
-                          })}
-                        </div>
+                        {/* List dwell points */}
+                        {dwellPoints.map((d, i) => (
+                          <button
+                            key={i}
+                            onClick={() => {
+                              if (flyToRef.current) flyToRef.current(d.lat, d.lng)
+                            }}
+                            className="w-full bg-white rounded-xl px-3 py-2 text-left hover:bg-blue-50 transition border border-slate-100 hover:border-blue-200"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-black text-slate-700">Stop {i + 1}</span>
+                              <span className="text-[11px] font-bold text-amber-500">{d.duration_minutes} menit</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {fmt(d.arrived_at)} → {fmt(d.left_at)}
+                            </p>
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -675,6 +551,8 @@ export default function TrackingPage() {
 
         {/* ── Map ── */}
         <div className="flex-1 relative">
+
+          {/* Loading overlay saat ganti tanggal */}
           {loading && mapReady && (
             <div className="absolute inset-0 z-[1000] bg-white/60 backdrop-blur-sm flex items-center justify-center">
               <div className="bg-white rounded-2xl shadow-lg px-6 py-4 flex items-center gap-3">
@@ -695,7 +573,11 @@ export default function TrackingPage() {
               </div>
             </div>
           ) : (
-            <MapContainer center={center} zoom={13} style={{ width: '100%', height: '100%' }}>
+            <MapContainer
+              center={center}
+              zoom={13}
+              style={{ width: '100%', height: '100%' }}
+            >
               <TileLayer
                 attribution='&copy; Google Maps'
                 url="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
@@ -703,13 +585,17 @@ export default function TrackingPage() {
                 maxNativeZoom={21}
               />
 
+              {/* <MapController
+                selectedUser={selectedUser}
+                selectedLoc={selectedLoc}
+              /> */}
+
               <MapController
                 selectedUser={selectedUser}
                 selectedLoc={selectedLoc}
                 onReady={(fn) => { flyToRef.current = fn }}
               />
 
-              {/* Salesman markers */}
               {locations.map(loc => (
                 <SalesMarker
                   key={loc.user_id}
@@ -719,7 +605,6 @@ export default function TrackingPage() {
                 />
               ))}
 
-              {/* Trail polyline */}
               {selectedUser !== null && trail.length > 1 && (
                 <Polyline
                   positions={trail.map(t => [t.lat, t.lng] as [number, number])}
@@ -729,17 +614,6 @@ export default function TrackingPage() {
                   dashArray="6, 4"
                 />
               )}
-
-              {/* Dwell markers — hanya tampil saat tab dwell aktif */}
-              {selectedUser !== null && activeTab === 'dwell' && dwellPoints.map((d, i) => (
-                <DwellMarker
-                  key={`dwell-${i}`}
-                  point={d}
-                  index={i}
-                  highlighted={highlightedStop === i}
-                  onOpen={() => setHighlightedStop(i)}
-                />
-              ))}
             </MapContainer>
           )}
 
